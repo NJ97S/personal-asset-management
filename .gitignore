@@ -1,0 +1,11 @@
+# OMC orchestration state (local only)
+.omc/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp

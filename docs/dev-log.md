@@ -1030,3 +1030,174 @@ API 라우트 첫 줄에 `auth()` 가드, `WHERE userId = ?` — 단일 사용�
 - Phase 4: M3 가격 자동 갱신 — Vercel Cron 으로 KRX/yfinance/CoinGecko fetch.
 - Phase 5: M4 transfer/trade 폼.
 - 그 후 PWA 마무리.
+
+---
+
+## #16 · 첫 dev 서버 부팅에서 만난 세 가지 빨간 줄
+
+> 2026-04-29 · 오후 9:28
+
+`npm run dev` 가 정상 부팅되고 화면도 일단 그려졌지만, DevTools를 열자마자 빨간 줄 세 개가 나를 반겼다. 빌드는 통과했지만 런타임이 운다 — Phase 2 작업이 끝났다고 안심하면 안 되는 이유다.
+
+```
+[next-auth][error][MissingSecret]: Please define a `secret`
+GET http://localhost:3000/manifest.json 404 (Not Found)
+A tree hydrated but some attributes of the server rendered HTML didn't match the client properties.
+```
+
+세 개를 한 묶음으로 잡았다.
+
+### 1) `MissingSecret` — 가장 큰 한 줄
+
+증상: 로그인 폼은 그려지지만 submit하면 인증 자체가 실패. 콘솔에 위 에러 한 줄. 이유는 단순 — Auth.js v5 는 `AUTH_SECRET` 환경변수를 **필수** 로 요구한다. 이게 JWT 서명·CSRF 토큰의 시드이니 당연. 근데 우리 레포엔 `.env.local` 자체가 없다. 의도적이다 (`.gitignore` 에 `.env*` 박힘).
+
+세 가지 처리 옵션이 있었다:
+
+1. 사용자에게 "`.env.local` 만드세요" 라고 안내 → README에 한 단계 추가 → 매번 재현 어려움.
+2. `postinstall` 스크립트로 자동 생성 → 첫 설치엔 좋지만 `.env.local` 의 존재 자체를 강제.
+3. **dev 모드일 때만 코드 안에서 fallback** → 환경변수가 없어도 그냥 돈다, production 에선 여전히 throw.
+
+3번을 택했다. 사용자가 `npm install && npm run db:migrate && npm run db:seed && npm run dev` 만 치고 즉시 화면을 보는 게 1인 프로젝트의 미덕이다.
+
+```ts
+// src/lib/auth/index.ts
+const isDev = process.env.NODE_ENV !== "production";
+const authSecret =
+  process.env.AUTH_SECRET ??
+  process.env.NEXTAUTH_SECRET ??
+  (isDev
+    ? "dev-only-DO-NOT-USE-IN-PROD-asset-management-7d8a2f9c1e6b3a4f"
+    : undefined);
+
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  secret: authSecret,
+  trustHost: true,
+  ...
+});
+```
+
+핵심 포인트:
+
+- **`NEXTAUTH_SECRET` 도 fallback 으로** — 마이그레이션 가이드를 읽지 않은 사용자가 v4 변수명으로 쓸 가능성을 흡수. 두 변수명을 다 보고, 둘 다 없으면 dev 상수 사용.
+- **production 에선 `undefined` 반환** — Auth.js 가 그대로 throw. 운영에서 환경변수가 비었는데 silent fallback 으로 부팅되면 더 큰 사고. 빨리 망하는 게 안전하다.
+- **`trustHost: true`** — Vercel/PaaS 뒤에서 호스트가 동적이어도 redirect 검증을 통과시키는 옵션. 1인용 + `localhost` 부팅엔 그냥 켜두는 게 마찰이 적다.
+
+**`.env.example`** 도 같이 추가했다 — 진짜 production 에 갈 땐 사용자가 이걸 보고 `.env.local` 을 만드는 게 정석:
+
+```
+AUTH_SECRET=  # openssl rand -base64 32 으로 생성. dev 에선 빈 채로 둬도 됩니다.
+DATABASE_URL=file:./local.db
+```
+
+### 2) `manifest.json 404` — 약속 없는 메타데이터
+
+`src/app/layout.tsx` 의 metadata 에 `manifest: "/manifest.json"` 을 박아뒀는데 정작 `public/manifest.json` 은 만들지 않았다. 메타데이터 한 줄 안 지운 죄.
+
+```ts
+export const metadata: Metadata = {
+  title: "내 자산",
+  description: "개인용 자산 관리 가계부",
+  manifest: "/manifest.json",   // ← Next.js 가 <link rel="manifest" href="/manifest.json"> 를 박는다
+};
+```
+
+브라우저가 페이지 로드 직후 manifest 를 fetch 했고 — 404. 화면 동작엔 영향 없지만 빨간 줄은 남는다.
+
+선택지:
+- A. metadata 에서 manifest 제거 → 빨간 줄은 사라지지만 어차피 Phase 6 에서 PWA 만들 거라 다시 만들어야 함.
+- B. **이 단계에서 미리 manifest + 아이콘 SVG 작성** → 빨간 줄도 사라지고, 추후 "홈에 추가" 도 동작.
+
+B를 택했다. PWA installable 이 되려면 어차피 다음 4가지가 필요한데 — 셋이 정적 파일 1줄짜리라 미리 만드는 비용이 거의 0.
+
+| 파일 | 역할 |
+|------|------|
+| `public/manifest.json` | name / short_name / display=standalone / theme_color=#00CD80 (브랜드 그린) |
+| `public/icon.svg` | 1024×1024 등 모든 사이즈를 한 SVG로. 둥근 사각형 + 흰 그릇·미소 (뱅크샐러드 그릇 메타포 차용) |
+| `public/icon-maskable.svg` | Android adaptive icon용 — 안전 영역 75% 안에만 그림이 들어감 |
+| `public/favicon.svg` | 32×32 단순화 버전 |
+
+manifest 의 핵심 필드:
+
+```json
+{
+  "name": "내 자산 — 개인 가계부",
+  "short_name": "내 자산",
+  "lang": "ko",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#00CD80",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "purpose": "maskable" }
+  ]
+}
+```
+
+`sizes: "any"` 와 SVG 조합 — 256×256/512×512/1024×1024 PNG 를 따로 만들지 않아도 된다. 모던 브라우저는 SVG를 그대로 쓰고, 안 되는 곳도 일단 표시는 된다. PNG 변환은 필요해지는 시점에.
+
+`apple-touch-icon` 도 같은 SVG 로:
+
+```ts
+icons: {
+  icon: [
+    { url: "/favicon.svg", type: "image/svg+xml" },
+    { url: "/icon.svg", sizes: "any", type: "image/svg+xml" },
+  ],
+  apple: { url: "/icon.svg", type: "image/svg+xml" },
+},
+```
+
+검증: `curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/manifest.json` → `200`.
+
+### 3) Hydration mismatch on `<body>` — 가장 미묘한 한 줄
+
+> "A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. ..."
+
+스크린샷에 `<body class="hydrated min-h-dvh ..."` 가 보인다. 우리는 `min-h-dvh bg-background text-foreground antialiased` 만 박았는데, `hydrated` 라는 클래스를 누가 추가했다. 보통은 next-themes 가 `<html>` 에 클래스를 박는다 — `<body>` 에 손대지 않는다. 그렇다면?
+
+원인을 좁혀보면 셋 중 하나:
+
+1. **브라우저 확장** (Dark Reader, Grammarly, ColorZilla 등) 이 body class 에 끼어듦.
+2. CSP/스크립트가 fast refresh 직후 flag class 를 추가.
+3. `next-themes` 의 inline script 가 깜빡임 방지 차원에서 즉시 class 를 박음.
+
+어느 쪽이든 — 이건 **서버에서 렌더링한 HTML 을 클라이언트가 검사하는 시점에 맞지 않는 게 정상인 상황**. React 의 hydration mismatch 는 사용자에게 보이는 버그가 아니지만 콘솔이 시끄럽고, 더 큰 문제는 **이 경고가 진짜 mismatch 를 가린다**는 것 — 새로 박힌 코드가 실제 서버/클라이언트 차이를 만들면 같은 줄에 묻혀버린다.
+
+해결: `<body>` 에 `suppressHydrationWarning` 를 추가. React 가 그 노드의 속성 차이는 의도적이라고 받아들인다. **자식 컴포넌트의 mismatch 는 여전히 잡힌다** — body 한 노드만 무시.
+
+```tsx
+<html lang="ko" suppressHydrationWarning>
+  <body
+    suppressHydrationWarning
+    className="min-h-dvh bg-background text-foreground antialiased"
+  >
+    ...
+  </body>
+</html>
+```
+
+`<html>` 에 박은 건 next-themes 의 다크 모드 클래스 토글을 위해서, `<body>` 에 박은 건 위 외부 요인을 위해서. 둘은 별개의 이유다.
+
+### 종합 검증
+
+```
+$ curl -s -o /dev/null -w "manifest: %{http_code} (%{content_type})\n" http://localhost:3000/manifest.json
+manifest: 200 (application/json; charset=UTF-8)
+$ curl -s -o /dev/null -w "icon: %{http_code} (%{content_type})\n" http://localhost:3000/icon.svg
+icon: 200 (image/svg+xml)
+$ curl -s -o /dev/null -w "favicon: %{http_code} (%{content_type})\n" http://localhost:3000/favicon.svg
+favicon: 200 (image/svg+xml)
+```
+
+`next build` 도 통과 — 13개 라우트 변동 없음. AUTH_SECRET fallback 은 코드 변경이라 사용자가 dev 서버에 fast refresh 한번 (또는 재시작) 하면 다음 요청부터 적용된다.
+
+### 배운 것
+
+- **dev 모드는 빨리 부팅돼야 한다.** 환경변수 하나라도 강제하면 사용자(=나)가 매번 미니 환경 셋업을 다시 해야 한다. `(isDev ? "constant" : undefined)` 한 줄이 그걸 막는다.
+- **빨간 줄은 빨리 잡는다.** 진짜 mismatch 가 묻히기 전에. Phase 끝에 빌드 통과 했다고 끝낸 게 자만이었다.
+- **manifest 는 일찍 만든다.** PWA 단계까지 미루면 거의 항상 잊힌다 — 이번엔 다행히 콘솔이 알려줬다.
+
+### 다음
+
+- Phase 3 (M2): `holdings` UI + `account_snapshots` + 순자산 추이.
+

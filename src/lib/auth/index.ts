@@ -19,7 +19,23 @@ const credentialsSchema = z.object({
   password: z.string().min(8),
 });
 
+/**
+ * `AUTH_SECRET` is required by Auth.js. In development we fall back to a
+ * stable, well-known constant so the dev server "just works" right after
+ * `npm install`. In production we let Auth.js throw so missing config
+ * cannot ship silently.
+ */
+const isDev = process.env.NODE_ENV !== "production";
+const authSecret =
+  process.env.AUTH_SECRET ??
+  process.env.NEXTAUTH_SECRET ??
+  (isDev
+    ? "dev-only-DO-NOT-USE-IN-PROD-asset-management-7d8a2f9c1e6b3a4f"
+    : undefined);
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  secret: authSecret,
+  trustHost: true,
   adapter: DrizzleAdapter(db, {
     usersTable: schema.users,
     accountsTable: schema.accounts_auth,

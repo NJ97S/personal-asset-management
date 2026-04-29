@@ -1,15 +1,14 @@
-import Link from "next/link";
-import { Plus } from "lucide-react";
 import { TopNav } from "@/components/nav/top-nav";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ListItem } from "@/components/domain/list-item";
 import { DateGroupHeader } from "@/components/domain/date-group-header";
 import { EmptyState } from "@/components/domain/empty-state";
+import { NewTransactionButton } from "@/components/forms/new-transaction-button";
 import { auth } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { desc, eq } from "drizzle-orm";
 import { formatTime } from "@/lib/utils";
+import { loadFormDefaults } from "@/lib/queries/dashboard";
 
 export const dynamic = "force-dynamic";
 
@@ -20,13 +19,31 @@ function dayKey(d: Date) {
 export default async function TransactionsPage() {
   const session = await auth();
   if (!session?.user?.id) return null;
+  const userId = session.user.id;
 
-  const txs = await db
-    .select()
-    .from(schema.transactions)
-    .where(eq(schema.transactions.userId, session.user.id))
-    .orderBy(desc(schema.transactions.occurredAt))
-    .limit(200);
+  const [txs, defaults] = await Promise.all([
+    db
+      .select({
+        id: schema.transactions.id,
+        occurredAt: schema.transactions.occurredAt,
+        type: schema.transactions.type,
+        amount: schema.transactions.amount,
+        payee: schema.transactions.payee,
+        memo: schema.transactions.memo,
+        categoryName: schema.categories.name,
+        categoryIcon: schema.categories.icon,
+        categoryColor: schema.categories.color,
+      })
+      .from(schema.transactions)
+      .leftJoin(
+        schema.categories,
+        eq(schema.transactions.categoryId, schema.categories.id)
+      )
+      .where(eq(schema.transactions.userId, userId))
+      .orderBy(desc(schema.transactions.occurredAt))
+      .limit(200),
+    loadFormDefaults(userId),
+  ]);
 
   const groups = new Map<
     string,
@@ -43,18 +60,19 @@ export default async function TransactionsPage() {
     if (t.type === "expense") g.expense += t.amount;
   }
 
+  const newButton = (
+    <NewTransactionButton
+      categories={defaults.categories}
+      accounts={defaults.accounts}
+      defaultCategoryIdByKind={defaults.defaultCategoryIdByKind}
+      defaultAccountId={defaults.defaultAccountId}
+      label="추가"
+    />
+  );
+
   return (
     <>
-      <TopNav
-        title="가계부"
-        right={
-          <Button size="sm" asChild>
-            <Link href={"/transactions/new" as never}>
-              <Plus className="h-4 w-4" /> 추가
-            </Link>
-          </Button>
-        }
-      />
+      <TopNav title="가계부" right={newButton} />
       <div className="p-4">
         {txs.length === 0 ? (
           <Card>
@@ -62,9 +80,14 @@ export default async function TransactionsPage() {
               title="아직 기록이 없어요"
               description="첫 거래를 추가해 볼까요?"
               action={
-                <Button asChild>
-                  <Link href={"/transactions/new" as never}>거래 추가</Link>
-                </Button>
+                <NewTransactionButton
+                  categories={defaults.categories}
+                  accounts={defaults.accounts}
+                  defaultCategoryIdByKind={defaults.defaultCategoryIdByKind}
+                  defaultAccountId={defaults.defaultAccountId}
+                  label="거래 추가"
+                  size="default"
+                />
               }
             />
           </Card>
@@ -81,8 +104,15 @@ export default async function TransactionsPage() {
                   {g.rows.map((t) => (
                     <ListItem
                       key={t.id}
-                      title={t.payee ?? t.memo ?? "거래"}
-                      subtitle={t.memo ?? undefined}
+                      icon={{ name: t.categoryIcon, color: t.categoryColor }}
+                      title={t.payee ?? t.categoryName ?? t.memo ?? "거래"}
+                      subtitle={
+                        t.categoryName
+                          ? t.memo
+                            ? `${t.categoryName} · ${t.memo}`
+                            : t.categoryName
+                          : t.memo ?? undefined
+                      }
                       amount={t.amount}
                       amountVariant={
                         t.type === "income"

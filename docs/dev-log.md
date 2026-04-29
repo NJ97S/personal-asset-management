@@ -829,3 +829,204 @@ JSX 안에서 일반 따옴표(`"`)는 ESLint가 막는다. 답은 `&quot;` 로 
 
 - Phase 2.5: 월별 리포트 — Recharts 도넛(카테고리 비율) + 일별 막대(지출 추이).
 - Phase 2.6: CSV export.
+
+---
+
+## #14 · 도넛 + 일별 막대 + Top 5 — Phase 2.5 리포트
+
+> 2026-04-29
+
+### 리포트 한 페이지에 무엇을 담을까
+
+가계부 리포트가 흔히 빠지는 함정: **차트를 너무 많이 박는 것.** 화면을 스크롤할 때마다 새로운 시각화가 나오면 "오, 멋있다" 다음에 "근데 이걸로 뭘 결정하지?" 가 따라온다. 그래서 처음부터 4가지 카드만 박았다.
+
+1. **이번 달 KPI 2장** — 지출·수입 + 전월 대비 % (MetricCard 재사용).
+2. **카테고리 도넛** — 어디에 돈이 가장 많이 갔나.
+3. **일별 막대** — 어느 날 몰아서 썼나.
+4. **상위 거래처 5** — 어디에 자주 갔나 / 큰 단건은 어디였나.
+
+이 네 가지면 "이번 달 어땠지?" 라는 질문에 80%는 답이 된다. 더 자세한 분석은 추후.
+
+### 도넛 — 가운데에 총합 박기
+
+뱅크샐러드 패턴: 도넛은 비율을 보여주고, **가운데 빈 공간에 총합을 박아** 두 정보를 한 번에 본다.
+
+```tsx
+<div className="relative" style={{ height }}>
+  <ResponsiveContainer>
+    <PieChart>
+      <Pie
+        innerRadius="62%"
+        outerRadius="92%"
+        paddingAngle={1.5}
+        stroke="none"
+      >
+        {display.map((d, i) => (
+          <Cell fill={d.color || FALLBACK_PALETTE[i % FALLBACK_PALETTE.length]} />
+        ))}
+      </Pie>
+    </PieChart>
+  </ResponsiveContainer>
+  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+    <span className="text-body-s text-muted-foreground">총 지출</span>
+    <span className="tabular text-heading-l">{formatKRW(total)}</span>
+  </div>
+</div>
+```
+
+`pointer-events-none` 로 가운데 텍스트가 도넛 hover 를 가리지 않게 했다. innerRadius `62%`, outerRadius `92%` — 두께 32px 룩이 디자인 시스템 §8.9 와 일치.
+
+색은 카테고리에 박힌 hex를 그대로 쓰고, 없으면 차트 팔레트 fallback. 사용자가 "스타벅스 = 그린" 으로 보던 카테고리 색이 도넛에서도 그대로 보여서 인지 부담 0.
+
+### 도넛 옆 범례 — 비율 + 금액 동시
+
+도넛만으로는 정확한 금액을 모른다. 옆에 정렬된 범례를 두고 — **퍼센트 + KRW 금액을 같이** 표시. 비율과 절대값 둘 다 즉시 비교.
+
+```tsx
+{sorted.map((d, i) => {
+  const pct = (d.amount / total) * 100;
+  return (
+    <li className="flex items-center gap-3 rounded-md px-1 py-1">
+      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: d.color }} />
+      <span className="flex-1 truncate text-body-m">{d.name}</span>
+      <span className="text-body-s text-muted-foreground tabular w-10 text-right">{pct.toFixed(0)}%</span>
+      <span className="tabular text-body-m">{formatKRW(d.amount)}</span>
+    </li>
+  );
+})}
+```
+
+데스크탑은 도넛 좌측 + 범례 우측 (`md:grid-cols-[260px_1fr]`), 모바일은 도넛 위 + 범례 아래.
+
+### 일별 막대 — 1일~31일 빈 칸 채우기
+
+거래가 없는 날도 막대 빈 칸을 그려야 한다 (안 그리면 "23일에 거래 없었어요" 가 안 보인다). 그래서 데이터를 빌드할 때 **그 달의 모든 일자** 를 미리 0원으로 채워넣고, 거래가 있는 날만 amount 누적:
+
+```ts
+const daysInMonth = monthEnd.getDate();
+const daily: { date: string; expense: number; income: number }[] = [];
+for (let i = 1; i <= daysInMonth; i++) {
+  const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), i);
+  daily.push({ date: dayKey(d), expense: 0, income: 0 });
+}
+for (const t of thisMonth) {
+  const idx = t.occurredAt.getDate() - 1;
+  if (t.type === "expense") daily[idx].expense += t.amount;
+  if (t.type === "income") daily[idx].income += t.amount;
+}
+```
+
+x축 라벨은 일자만 (`28일` 가 아니라 `28`). 30개 라벨이 다 들어가면 답답하니, Recharts가 자동으로 일부를 드롭하도록 둠. y축은 만/천 단위로 압축 (`100,000` → `10만`):
+
+```ts
+tickFormatter={(v) => {
+  const n = Number(v);
+  if (n >= 10000) return `${Math.round(n / 10000)}만`;
+  if (n >= 1000) return `${Math.round(n / 1000)}천`;
+  return String(n);
+}}
+```
+
+### 상위 거래처 5 — payee가 비면 카테고리로 폴백
+
+처음에 단순히 `payee` 로만 그루핑했더니 — 거래처를 비워둔 거래가 다 "기타" 로 묶였다. 그건 별로 유용한 정보가 아니다. 폴백을 카테고리 이름으로:
+
+```ts
+const key =
+  t.payee?.trim()
+  || (t.categoryId ? catLookup.get(t.categoryId)?.name : null)
+  || "기타";
+payeeMap.set(key, (payeeMap.get(key) ?? 0) + t.amount);
+```
+
+이렇게 하니 "스타벅스 12,500원" + "이마트 45,300원" + "식비 23,000원 (거래처 비움)" 이 모두 같은 리스트에서 한눈에 보인다. 정확도는 조금 떨어지지만 **사용자가 어디에 돈을 썼는지** 라는 질문엔 충분.
+
+### 빈 상태 한 번 더
+
+이번 달도 지난 달도 거래가 0이면 차트를 그리지 말고 EmptyState. 빈 도넛은 보기에 좋지 않다.
+
+```tsx
+if (thisMonth.length === 0 && lastMonth.length === 0) {
+  return (
+    <Card>
+      <EmptyState
+        title="이번 달 거래가 없어요"
+        description="가계부에 첫 거래를 추가하면 리포트가 채워져요."
+      />
+    </Card>
+  );
+}
+```
+
+### Recharts 무게
+
+Recharts 가 First Load JS를 ~120 kB 더 키운다 (이번 달 page = 222 kB). 라이트한 차트 라이브러리(예: visx, uPlot)로 바꿀 수도 있지만, **shadcn 호환 + Recharts API 가 가장 단순** 하다는 트레이드오프로 일단 두기로. 추후 페이지가 자주 열리는 게 아니니 (홈은 KPI만 보여줌) 222 kB가 큰 비용은 아니다.
+
+### 검증
+
+- `tsc --noEmit`: 0 errors
+- `next build`: ✓ 11개 라우트, `/reports` 222 kB First Load JS
+
+---
+
+## #15 · 데이터는 내 거예요 — Phase 2.6 CSV/JSON export
+
+> 2026-04-29
+
+### 왜 export 가 1순위 기능인가
+
+Mint가 망한 가장 큰 이유 중 하나는 — 사용자가 **떠날 수 없게** 만들었다는 것. 1인용 가계부가 신뢰를 얻으려면 **언제든 떠날 수 있어야** 한다. 그래서 Phase 2 의 마지막 자리는 export.
+
+### 두 가지 포맷
+
+- **CSV** — Excel·구글 시트·다른 가계부에서 즉시 열린다. 행: 거래 1건, 열: id/date/type/amount/account/category/...
+- **JSON** — 계정·카테고리·거래 전체 구조를 한 파일에. 추후 import 의 입력으로도 사용 가능.
+
+### Excel 한국어 BOM
+
+```ts
+const body = "﻿" + rows.join("\n");
+```
+
+UTF-8 BOM(`﻿`) 이 한 글자 앞에 붙으면 Excel(Windows/Mac KR) 이 한국어를 안 깨고 연다. BOM이 없으면 식비/교통 같은 한글이 ??? 로 보인다. 이거 한 줄 차이로 사용자가 "어 깨졌네" → "오 잘 열리네" 가 갈린다.
+
+### CSV 이스케이프
+
+```ts
+function csvEscape(value: unknown): string {
+  if (value == null) return "";
+  const s = String(value);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+```
+
+따옴표·콤마·줄바꿈이 메모에 들어가는 일이 종종 있다 — RFC 4180 룰 그대로. 추가 의존성 0.
+
+### URL 한 줄로 다운로드
+
+```tsx
+<Button asChild variant="secondary">
+  <a href="/api/export?format=csv" download>
+    <Download className="h-4 w-4" /> CSV 내려받기
+  </a>
+</Button>
+```
+
+`<a download>` 만으로 끝. Server route 가 `Content-Disposition: attachment` 를 보내면 브라우저가 알아서 파일 저장 다이얼로그를 띄운다. 이건 React state 안 건드린다.
+
+### 보안
+
+API 라우트 첫 줄에 `auth()` 가드, `WHERE userId = ?` — 단일 사용자라도 그대로. URL을 다른 사람이 알아도 다른 사용자의 거래는 새지 않는다.
+
+### 검증
+
+- `next build`: ✓ 13개 라우트 — `/api/export`, `/settings/data` 추가됨.
+- 직접 곧 dev 서버 켜서 `/api/export?format=csv` 로 받아보면 확인 끝.
+
+### 다음
+
+- Phase 3: M2 자산 트래킹 — `holdings`, `account_snapshots`, 순자산 추이 그래프.
+- Phase 4: M3 가격 자동 갱신 — Vercel Cron 으로 KRX/yfinance/CoinGecko fetch.
+- Phase 5: M4 transfer/trade 폼.
+- 그 후 PWA 마무리.

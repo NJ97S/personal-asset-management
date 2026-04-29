@@ -45,6 +45,34 @@
 
 ### 다음
 
-- DB 마이그레이션 생성/적용, 시드 사용자 + 시드 카테고리 스크립트.
 - Phase 2 (M1): 거래 입력 폼(Server Action), 카테고리/계정 CRUD, 월별 리포트 차트.
 - 데모용 거래 데이터 생성 헬퍼 (개발 편의).
+
+---
+
+## 2026-04-29 — Phase 2.1 DB 마이그레이션 + 시드
+
+### 무엇을
+
+- `drizzle-kit generate` 으로 첫 마이그레이션 SQL 생성 (`drizzle/0000_*.sql`, 11개 테이블).
+- `scripts/migrate.ts`: libsql migrator로 로컬 SQLite(`./local.db`)에 마이그레이션 적용.
+- `scripts/seed.ts`: 기본 사용자(`me@asset.local` / `asset-dev-1234`), 카테고리 12종(식비/교통/주거/쇼핑/문화/의료/통신/기타지출 + 급여/보너스/이자/기타수입), 기본 계정 3종(현금/주거래은행/신용카드), 빈 settings row까지 한 번에 삽입.
+- 의존성 추가: `nanoid` (ID), `tsx` (스크립트 실행).
+- npm 스크립트: `db:generate`, `db:migrate`, `db:push`, `db:studio`, `db:seed`.
+
+### 왜 그렇게
+
+- **drizzle-kit migrator vs push**: 1인 프로젝트지만 SQL 마이그레이션 파일을 git에 보관하면 추후 Postgres 전환·리뷰가 쉽다. 일관된 히스토리 우선.
+- **시드를 코드로**: `.sql` 시드 파일은 비밀번호 해시·랜덤 ID 생성에 부적합. tsx 한 파일이 가장 단순.
+- **idempotent seed**: 같은 명령을 여러 번 돌려도 안전 (사용자/카테고리/계정 존재 여부 검사 후 skip).
+
+### 검증
+
+- `npm run db:migrate` → `[migrate] done` (file:./local.db).
+- `npm run db:seed` → user/12 categories/3 accounts/settings 삽입.
+- `tsc --noEmit` 통과.
+
+### 다음
+
+- Phase 2.2: 거래/카테고리/계정 Server Actions (Zod + auth guard).
+- Phase 2.3: 거래 입력 시트 (Drawer/Dialog).

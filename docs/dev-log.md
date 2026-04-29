@@ -76,3 +76,131 @@
 
 - Phase 2.2: 거래/카테고리/계정 Server Actions (Zod + auth guard).
 - Phase 2.3: 거래 입력 시트 (Drawer/Dialog).
+
+---
+
+## 2026-04-29 — Phase 2.2 Server Actions: 거래/카테고리/계정
+
+> 한 줄 요약: 모든 mutate 경로를 `"use server"` 액션 한 곳으로 모았다. Zod 스키마로 입력을 정상화하고, 인증 가드와 표준 에러 응답을 헬퍼로 빼서 페이지·폼 어디서든 같은 약속으로 호출하게 만들었다.
+
+### 디자인 의도
+
+가계부의 데이터 흐름은 항상 같은 모양이다. **(1) 폼 입력 → (2) 검증 → (3) 인증 컨텍스트 확인 → (4) DB 쓰기 → (5) revalidate → (6) UI 갱신.** 이 6단계를 매 페이지에 다시 짜면 코드가 빠르게 갈라진다. 그래서 처음부터 한 가지 패턴을 강제했다.
+
+#### `_helpers.ts` — 액션 공통 인프라
+
+```ts
+class ActionError extends Error { code: string; ... }
+async function requireUserId(): Promise<string>
+type ActionResult<T> = { ok: true; data: T } | { ok: false; error, code }
+function ok<T>(data: T): ActionResult<T>
+function fail(err: unknown): ActionResult<never>
+```
+
+- **`ActionError`** 는 사용자에게 보여줄 친근한 메시지를 담는 도메인 오류. throw하면 `fail()`이 그대로 노출.
+- 그 외 모든 예외는 콘솔에 로깅 후 일반 메시지("처리 중 오류…")로 매핑. 스택 트레이스가 클라이언트에 새는 사고를 차단.
+- 결과 타입을 union으로 좁혀서, 호출부에서 `if (!result.ok)` 로 좁힐 수 있게 했다. 토스트 표시·폼 에러 매핑이 일관됨.
+
+#### `transactions.ts` — 4가지 거래 타입을 한 액션에서
+
+가계부의 거래는 **단순(income/expense), 이체(transfer), 주식 거래(trade)** 4가지인데, 컬럼 셋이 서로 다르다(transfer는 from/to, trade는 ticker·수량·단가·수수료). UI 입장에선 폼 한 개에서 타입만 바뀌면 좋지만, 검증 규칙은 분기되어야 한다.
+
+해결: **Zod `discriminatedUnion`** 으로 `type` 필드를 디스크리미네이터로 잡고, 4가지 스키마(income/expense는 같은 모양 → 1개로 합침)를 union.
+
+```ts
+const incomeOrExpenseSchema = z.object({
+  type: z.enum(["income", "expense"]),
+  accountId: z.string().min(1, "계정을 선택해 주세요."),
+  categoryId: z.string().min(1, "카테고리를 선택해 주세요."),
+  ...baseFields,
+});
+
+const transferSchema = z.object({
+  type: z.literal("transfer"),
+  fromAccountId: z.string().min(1, "보내는 계정을 선택해 주세요."),
+  toAccountId: z.string().min(1, "받는 계정을 선택해 주세요."),
+  ...baseFields,
+});
+
+const tradeSchema = z.object({
+  type: z.literal("trade"),
+  tradeKind: z.enum(["buy", "sell"]),
+  ticker: z.string().min(1),
+  quantity: z.coerce.number().positive(),
+  pricePerUnit: z.coerce.number().positive(),
+  fee: z.coerce.number().min(0).default(0),
+  accountId: z.string().min(1),
+  ...baseFields,
+});
+
+const createTxSchema = z.discriminatedUnion("type", [
+  incomeOrExpenseSchema,
+  transferSchema,
+  tradeSchema,
+]);
+```
+
+이렇게 하면 클라이언트에서 잘못된 조합(예: transfer인데 categoryId만 보냄)이 와도 서버에서 1차 거름. 메시지를 한국어로 박아서 그대로 토스트로 띄울 수 있다.
+
+#### 한 번 막힌 곳: TypeScript discriminated union narrowing
+
+내가 처음에 쓴 코드는 다음과 같았다:
+
+```ts
+if (input.type === "income" || input.type === "expense") {
+  // ok
+} else if (input.type === "transfer") {
+  // ok
+} else {
+  // here, ts says input.tradeKind doesn't exist
+}
+```
+
+타입스크립트가 `else` 가지에서 trade로 좁혀주지 않았다. 이유: 첫 분기의 조건이 `"income" | "expense"` 두 케이스를 묶는데, TS는 union을 좁힐 때 *각각*을 빼지 않고 한 묶음으로 본다. 두 번째 분기에서 transfer가 빠지긴 하지만, **이미 첫 분기에서 `incomeOrExpenseSchema` 의 결과 타입이 줄어들지 않은 상태로 남는 케이스**가 있다 (양쪽 다 같은 obj 모양인데 type 리터럴만 다른 두 객체 union이라).
+
+`switch (input.type) { case "income": case "expense": ... break; case "transfer": ... case "trade": ... }` 으로 바꾸자 TS가 정확히 좁혀줬다. switch fall-through(케이스 둘이 같은 처리)도 명시적이라 가독성도 좋다. 결과적으로 코드가 더 짧아졌다.
+
+#### `categories.ts`, `accounts.ts` — upsert + archive 패턴
+
+카테고리·계정은 거래보다 단순하다. 입력 폼이 같고, `id` 가 있으면 업데이트, 없으면 신규. **소프트 삭제 (`isArchived`)** 만 지원: 1인 사용자라도 과거 거래의 외래키를 깨뜨리는 hard delete는 risk가 너무 크다.
+
+```ts
+export async function archiveCategory(id: string, archived = true) {
+  const userId = await requireUserId();
+  await db.update(schema.categories)
+    .set({ isArchived: archived })
+    .where(and(
+      eq(schema.categories.id, id),
+      eq(schema.categories.userId, userId),
+    ));
+  ...
+}
+```
+
+`userId`를 항상 WHERE에 박는 게 핵심. 단일 사용자라도 추후 멀티유저로 확장될 때 RLS 같은 행 단위 격리를 굳이 짜지 않아도 되도록.
+
+#### `revalidatePath` 전략
+
+- 거래 변경 → `/`, `/transactions`, `/accounts` 셋 다 재검증 (대시보드 KPI도 거래에 의존하니까).
+- 카테고리 변경 → `/settings/categories`, `/transactions` (카테고리 라벨이 거래 목록에 표시).
+- 계정 변경 → `/accounts`, `/settings/accounts`, `/transactions`.
+
+오버 리밸리데이트가 약간 있긴 한데, Server Component + libsql은 충분히 빠르다. 캐시 정확도가 우선.
+
+### 보안 고려
+
+- 모든 액션 첫 줄: `await requireUserId()` — 세션 없으면 즉시 throw.
+- 모든 update/delete WHERE에 `userId` 강제 결합 — 다른 사용자의 row를 ID 추측으로 건드리는 path 차단.
+- 클라이언트에 던지는 메시지는 ActionError 한 종류만. 그 외 예외는 `console.error` + 일반 메시지.
+- `$ACTION_*` 같은 React Server Action 내부 필드는 `readFormData` 에서 무시.
+
+### 검증
+
+- `tsc --noEmit` 통과.
+- 직접 호출 시뮬레이션은 다음 단계(폼 UI)에서 통합으로 검증 예정.
+
+### 다음
+
+- Phase 2.3: 거래 입력 시트 — 모바일 Drawer / 데스크탑 Dialog. `useFormState` + `createTransaction` 연결.
+- 빠른 입력 UX: 가장 최근 사용 카테고리·계정 자동 선택, 메모 자동완성(추후).
+

@@ -721,3 +721,111 @@ for (const t of recent) {
 - Phase 2.4: 카테고리·계정 관리 페이지 (`/settings/categories`, `/settings/accounts`).
 - Phase 2.5: 월별 리포트 (Recharts 도넛 + 일별 막대).
 - Phase 2.6: CSV export.
+
+---
+
+## #13 · 카테고리·계정 CRUD를 한 시트로 — Phase 2.4
+
+> 2026-04-29
+
+### 빌드 블록 vs 페이지
+
+이미 만든 두 가지가 있다 — `ResponsiveSheet` (모바일 Drawer / 데스크탑 Dialog 자동 분기) 와 `upsertCategory` / `upsertAccount` 액션. 이걸 다시 짤 이유가 없으니, 새로 만든 건 본질적으로 두 가지뿐이었다:
+
+1. **폼 컴포넌트** (`category-form.tsx`, `account-form.tsx`) — 색·아이콘 선택을 시각적으로.
+2. **매니저 컴포넌트** (`category-manager.tsx`, `account-manager.tsx`) — 리스트 + 추가/편집/보관 버튼을 한 컴포넌트로 묶음.
+
+페이지(`/settings/categories`, `/settings/accounts`)는 단지 DB 쿼리해서 매니저에 props로 내려주는 30줄짜리 server component.
+
+### 색·아이콘 픽업 — 정적 옵션 vs 자유 입력
+
+처음엔 hex 색을 직접 입력받을까 했지만 — 1인용에서 색 17개를 외워서 입력하는 사용자는 없다. 그리고 디자인 시스템 §2.4 차트 팔레트가 5색 이미 정해져 있으니 — **8색 팔레트** 로 제한하는 게 자연스럽다.
+
+```ts
+const COLOR_OPTIONS = [
+  "#00CD80", // brand-green
+  "#0099FF", // brand-blue
+  "#00CDCD", // brand-cyan
+  "#F582C6", // brand-pink
+  "#F79009", // brand-amber
+  "#F04438", // danger
+  "#7E57C2", // purple (보조)
+  "#9CA3AF", // neutral
+] as const;
+```
+
+Lucide 아이콘도 같은 원리. 가계부에서 자주 쓰는 16개를 미리 골라서:
+
+```ts
+const ICON_OPTIONS = [
+  "Utensils", "Bus", "Home", "ShoppingBag",
+  "Film", "Stethoscope", "Smartphone", "Coffee",
+  "Briefcase", "Sparkles", "PiggyBank", "Coins",
+  "GraduationCap", "Plane", "Heart", "Gift",
+] as const;
+```
+
+그리드 8×2로 깔끔하게 떨어진다. 사용자가 더 원하면 추후 검색 기능을 추가할 수 있지만, 지금은 단순함이 우선.
+
+### 색 미리보기를 실시간으로
+
+색을 클릭하는 즉시 아이콘 그리드도 같은 색으로 갱신되어야 한다 — "이 색에 이 아이콘이 어울릴까?" 를 한눈에. 그래서 `CategoryIcon` 의 `color` prop 에 React state를 그대로 흘려보냈다:
+
+```tsx
+<CategoryIcon icon={name} color={color} size="sm" />
+```
+
+색을 바꾸면 16개 아이콘 컨테이너 전체가 새 색의 14% 톤으로, 아이콘 자체도 새 색으로 업데이트.
+
+### 보관(archive) 토글 — 두 줄짜리 액션
+
+soft delete만 지원한다고 했으니, 매니저에선 "보관" / "다시 사용" 두 상태만 토글하면 된다.
+
+```tsx
+function toggleArchive(c: Category) {
+  startTransition(async () => {
+    const result = await archiveCategory(c.id, !c.isArchived);
+    if (result.ok) {
+      toast.success(c.isArchived ? "다시 사용할게요" : "보관함으로 옮겼어요");
+    } else {
+      toast.error(result.error);
+    }
+  });
+}
+```
+
+보관된 카테고리는 회색 처리(`opacity-50`) — 시각적으로 즉시 구분. 거래 입력 시트의 카테고리 리스트(`loadFormDefaults`)는 이미 `isArchived = false` 만 가져오므로 자동으로 빠진다. 리포트도 마찬가지.
+
+### 탭으로 지출/수입 분리
+
+카테고리 12개 정도는 한 화면에 나열해도 되지만, 사용자가 30~40개로 늘리는 순간 헝클어진다. 처음부터 **지출/수입 두 탭** 으로 나눠서 mental model 을 분리:
+
+```tsx
+<Tabs defaultValue="expense">
+  <TabsList className="grid w-full grid-cols-2">
+    <TabsTrigger value="expense">지출 · {expense.length}</TabsTrigger>
+    <TabsTrigger value="income">수입 · {income.length}</TabsTrigger>
+  </TabsList>
+  ...
+</Tabs>
+```
+
+탭 라벨에 카운트를 같이 박아서 ("지출 · 8개") 어디에 몇 개 있는지 한눈에. 작은 디테일이지만 정보 밀도가 확 올라간다.
+
+### 한 번 막힌 곳: ESLint `react/no-unescaped-entities`
+
+```tsx
+"추가" 버튼으로 만들어 보세요.
+```
+
+JSX 안에서 일반 따옴표(`"`)는 ESLint가 막는다. 답은 `&quot;` 로 escape 하거나, 아예 한국식 표현으로 바꾸는 것. 후자를 택했다 — "**우측 상단 추가 버튼으로 만들어 보세요.**" 가 더 자연스럽고, 사용자에게 위치 힌트까지 준다. 코드 레벨의 escape는 미관도 떨어지고 한국 사용자 입장에선 뜬금없다.
+
+### 검증
+
+- `tsc --noEmit`: 0 errors
+- `next build`: ✓ 10개 라우트 — `/settings/categories`, `/settings/accounts` 추가됨, 둘 다 ~325 kB First Load JS (Tabs + Sheet/Drawer + Form 다 포함).
+
+### 다음
+
+- Phase 2.5: 월별 리포트 — Recharts 도넛(카테고리 비율) + 일별 막대(지출 추이).
+- Phase 2.6: CSV export.

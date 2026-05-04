@@ -11,6 +11,7 @@ import { db, schema } from "@/db";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { formatKRW } from "@/lib/utils";
 import { loadFormDefaults } from "@/lib/queries/dashboard";
+import { computeNetWorth } from "@/lib/queries/balances";
 
 export const dynamic = "force-dynamic";
 
@@ -79,9 +80,10 @@ export default async function HomePage() {
   const session = await auth();
   if (!session?.user?.id) return null;
 
-  const [data, defaults] = await Promise.all([
+  const [data, defaults, netWorth] = await Promise.all([
     loadDashboard(session.user.id),
     loadFormDefaults(session.user.id),
+    computeNetWorth(session.user.id),
   ]);
   const isEmpty = data.recent.length === 0 && data.accountsCount === 0;
   const now = new Date();
@@ -120,6 +122,17 @@ export default async function HomePage() {
           </Card>
         ) : (
           <>
+            <Card className="space-y-1">
+              <p className="text-body-s text-muted-foreground">순자산</p>
+              <p className="tabular text-display-l">
+                {formatKRW(netWorth.netWorth)}
+              </p>
+              <p className="text-body-s text-muted-foreground">
+                자산 {formatKRW(netWorth.assets)} − 부채{" "}
+                {formatKRW(netWorth.liabilities)}
+              </p>
+            </Card>
+
             <div className="grid gap-3 md:grid-cols-2">
               <MetricCard
                 label={`${monthLabel} 지출`}

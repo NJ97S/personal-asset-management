@@ -1441,3 +1441,145 @@ const buttonVariants = cva(
 
 - Phase 3 (M2): `holdings` UI + `account_snapshots` + 순자산 추이.
 
+---
+
+## #19 · 잔액 한 줄로 만들기 — Phase 3.1 + 3.2
+
+> 2026-05-04
+
+Phase 2 까지의 모든 화면은 사실 **거짓말이었다.** 홈의 "이번 달 지출"은 거래 합산이라 진짜였지만, `/accounts` 의 카드들은 `initialBalance` 만 보여주고 있었다 — 거래가 아무리 쌓여도 잔액이 안 변했다. 진짜 잔액을 한 곳에서 계산하는 함수가 먼저 필요했다.
+
+### `computeAccountBalances` — 한 번 쿼리, 한 번 fold
+
+```ts
+export async function computeAccountBalances(userId: string) {
+  const [accounts, txs] = await Promise.all([
+    db.select().from(schema.accounts).where(eq(schema.accounts.userId, userId)),
+    db.select().from(schema.transactions).where(eq(schema.transactions.userId, userId)),
+  ]);
+
+  const balances = new Map<string, number>();
+  for (const a of accounts) balances.set(a.id, a.initialBalance);
+
+  const add = (id: string | null | undefined, delta: number) => {
+    if (!id) return;
+    balances.set(id, (balances.get(id) ?? 0) + delta);
+  };
+
+  for (const t of txs) {
+    switch (t.type) {
+      case "income":   add(t.accountId, t.amount); break;
+      case "expense":  add(t.accountId, -t.amount); break;
+      case "transfer":
+        add(t.fromAccountId, -t.amount);
+        add(t.toAccountId, t.amount);
+        break;
+      case "trade": {
+        // sell → 현금 +, buy → 현금 -
+        const sign = t.tradeKind === "sell" ? 1 : -1;
+        add(t.accountId, sign * t.amount);
+        break;
+      }
+    }
+  }
+  return accounts.map((a) => ({ ...a, balance: balances.get(a.id) ?? a.initialBalance }));
+}
+```
+
+**왜 한 번에 다 가져오는가?** 1인 사용자의 거래 수는 많아야 수만 건. SQLite 에서 fetch + JS fold 는 SQL 집계보다 단순하고, schema 가 더 풍부해질 때(예: 환율 환산) 코드만 늘어난다. 거래 수가 100k 를 넘으면 다시 SQL 집계로 옮길 수 있다 — 그건 그때.
+
+**`add` 헬퍼 한 줄로 null 체크 흡수.** transfer 의 from/to 둘 다 nullable, trade 의 accountId 도 nullable. 매번 `if (id) balances.set(...)` 을 쓰지 않게.
+
+### `computeNetWorth` — 부채를 부채로 인정하기
+
+가계부에서 카드/대출 처리는 직관과 어긋나는 지점이 있다. 신용카드의 `balance` 가 -200,000 (이번 달 사용 누적) 이면 **부채 200,000** 으로 카운트해야 한다. 자산 +/- 부호 그대로 더하면 카드 사용액이 자산을 갉아먹는 모양이 되어버려 — 이건 회계적으로 맞지 않다.
+
+```ts
+const LIABILITY_TYPES = new Set<AccountType>(["credit_card", "loan"]);
+
+if (LIABILITY_TYPES.has(a.type)) {
+  liabilities += Math.max(0, -a.balance);
+  // 잔액이 +면 사용 가능 한도(자산 아님). 부채만 카운트.
+} else {
+  assets += a.balance;
+}
+```
+
+`Math.max(0, -a.balance)` — 잔액이 양수(즉, 카드를 안 썼거나 갚아둔 상태) 라면 0. 음수면 절댓값을 부채로. 이렇게 하면:
+
+- 신용카드 사용 -150,000 → 부채 150,000
+- 신용카드 잔액 0 또는 + → 부채 0
+- 일반 은행 통장 -50,000 (마이너스 통장) → 자산 -50,000 으로 잡힘 (대출 계정 아니면 자산으로 음수 인정)
+
+마이너스 통장은 사실 "loan" 으로 등록하는 게 정확하다. 사용자가 직접 분류하면 됨.
+
+### 화면 적용
+
+`/accounts` 가 진짜 잔액을 들고 와서 보여주는 모습으로 바뀌었다:
+
+```tsx
+const liability = isLiabilityAccount(a.type);
+const displayBalance = liability ? Math.max(0, -a.balance) : a.balance;
+
+<div className={liability ? "text-danger" : "text-foreground"}>
+  {liability ? "-" : ""}{formatKRW(displayBalance)}
+</div>
+```
+
+부채 계정의 잔액은 빨간색에 `-` 접두. 사용자가 한눈에 "이건 갚을 돈" 으로 인식한다.
+
+홈 대시보드에는 **순자산 카드 한 장** 추가:
+
+```tsx
+<Card>
+  <p className="text-body-s text-muted-foreground">순자산</p>
+  <p className="tabular text-display-l">{formatKRW(netWorth.netWorth)}</p>
+  <p className="text-body-s text-muted-foreground">
+    자산 {formatKRW(netWorth.assets)} − 부채 {formatKRW(netWorth.liabilities)}
+  </p>
+</Card>
+```
+
+이 한 장이 가계부의 "왜 이걸 쓰는가" 를 응축한다. 이번 달 지출/수입은 그 다음 줄.
+
+### 계정 상세 페이지 — `/accounts/[id]`
+
+카드 클릭 → 상세. 헤더에 큰 아이콘 + 이름 + 잔액, 그 아래 그 계정에 관련된 거래만 일별 그루핑.
+
+핵심 디테일: **이체(transfer) 도 표시되어야 한다.** 일반 거래는 `accountId` 만 보면 되지만 이체는 from/to 두 면이 있다. 한 계정 입장에서 보면:
+
+- `fromAccountId === id` → "이체 (보냄)" + 빨강 (지출 변종)
+- `toAccountId === id` → "이체 (받음)" + 초록 (수입 변종)
+
+```ts
+.where(
+  and(
+    eq(schema.transactions.userId, session.user.id),
+    or(
+      eq(schema.transactions.accountId, id),
+      eq(schema.transactions.fromAccountId, id),
+      eq(schema.transactions.toAccountId, id),
+    )
+  )
+)
+```
+
+drizzle 의 `or` 한 번이면 끝. 일별 헤더의 income/expense 합산도 같은 로직 — 이 계정으로 들어오면 income, 나가면 expense.
+
+### 검증
+
+- `next build`: 14개 라우트, `/accounts/[id]` 추가 (118 kB First Load JS).
+- 잔액 계산은 시드 사용자 기준 `[seed] 3 accounts` 모두 0원 (initial=0, 거래 없음). 거래를 넣어보면 즉시 합산.
+- 부채 처리: 신용카드 계정에 -120,000 거래(시뮬) 시 → 카드 카드의 잔액 표시 `-₩120,000`, 홈 부채 카드 `₩120,000`, 순자산은 그만큼 -.
+
+### 배운 것
+
+- **모든 잔액 로직을 한 함수에 모은다.** 화면마다 같은 합산을 다시 짜면 분기점이 생기고, 어느 화면은 transfer를 빼먹고 어느 화면은 trade 를 빼먹는다. 함수 한 곳을 진실의 원천으로.
+- **부채는 부호 처리가 아니라 분류로 다룬다.** "음수 자산" 으로 보이게 하면 카드 사용이 자산을 갉아먹는 모양이라 사용자가 헷갈린다. 부채 카테고리에 양수로 쌓는 편이 회계 직관과도 맞다.
+- **상세 페이지는 한 관점만 가진다.** 거래는 두 면을 갖지만 계정 상세는 그 계정의 입장에서만 본다. 이체의 두 라인을 다 보여주지 않고 한 라인 (받음/보냄) 만 보여주는 게 덜 헷갈린다.
+
+### 다음
+
+- Phase 3.3: holdings 관리 UI (`/settings/holdings`) — 종목 등록/편집/보관.
+- Phase 3.4: 순자산 추이 라인 차트 (account_snapshots + 현재 잔액).
+

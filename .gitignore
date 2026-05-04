@@ -51,3 +51,6 @@ local.db-*
 # Coverage / test
 coverage/
 .tsbuildcache/
+
+# reference image
+references/

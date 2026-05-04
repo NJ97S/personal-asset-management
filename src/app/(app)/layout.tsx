@@ -9,11 +9,7 @@ export default function AppShellLayout({
   return (
     <div className="flex min-h-dvh bg-surface">
       <Sidebar />
-      <main className="flex-1 pb-20 md:pb-0">
-        <div className="mx-auto w-full max-w-[720px] md:max-w-[1120px]">
-          {children}
-        </div>
-      </main>
+      <main className="min-w-0 flex-1 pb-20 md:pb-0">{children}</main>
       <BottomNav />
     </div>
   );

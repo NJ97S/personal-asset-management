@@ -1201,3 +1201,243 @@ favicon: 200 (image/svg+xml)
 
 - Phase 3 (M2): `holdings` UI + `account_snapshots` + 순자산 추이.
 
+---
+
+## #17 · 데스크탑 빈 공간과 까만 글씨 — UI 첫 폴리시
+
+> 2026-05-04
+
+dev 서버에서 데스크탑 화면을 띄우고 한참 들여다봤다. 첫인상이 두 가지로 안 좋았다.
+
+1. **사이드바 옆이 휑하다.** 좌측 사이드바 끝에서 카드 시작 지점까지 큰 빈 공간이 떠 있고, 그 다음 카드 그리드가 약간 우측에 치우쳐 보인다.
+2. **"+ 새 거래" 버튼의 글씨가 거의 검정으로 보인다.** 그린 버튼 위에 검정 글씨라 가독성도 답답하고, 디자인 시스템이 정한 톤("primary 위 흰색")과 어긋난다.
+
+둘 다 토큰·레이아웃 결정의 갈림길에서 잘못된 가지를 골랐던 흔적이다. 한 번에 잡았다.
+
+### 빈 공간의 정체 — `mx-auto` 가 두 번 끼어든 결과
+
+원래 레이아웃은 이랬다:
+
+```tsx
+<div className="flex min-h-dvh bg-surface">
+  <Sidebar />                                {/* md:w-60 = 240px */}
+  <main className="flex-1 pb-20 md:pb-0">
+    <div className="mx-auto w-full max-w-[720px] md:max-w-[1120px]">
+      {children}
+    </div>
+  </main>
+  <BottomNav />
+</div>
+```
+
+겉보기엔 합리적이다. 사이드바 240, 본문 max-w-1120, mx-auto. 그런데 1920×1080 모니터에서 어떻게 분할되는지 따라가보자:
+
+```
+[ Sidebar 240 ][ main flex-1 = 1680 ]
+                  ↑
+                  이 1680 안에 max-w-1120 + mx-auto
+                  → 좌우 280씩 빈 공간
+```
+
+본문 컨테이너는 main 영역의 가운데에 정렬된다. **사이드바가 이미 좌측에 박혀 있다는 사실을 모르고** 가운데 정렬을 한 것이다. 그 결과:
+
+- 사이드바 우측 (240px) → 약 280px 빈 공간 → 카드 → 약 280px 빈 공간 → 화면 우측
+
+사용자 눈에는 "사이드바 옆이 휑하고, 본문이 어디론가 모여 있다" 로 보인다. 그게 어색함의 정체다.
+
+해결은 **사이드바와 본문을 한 mx-auto 박스 안에 함께 묶는 것**.
+
+```tsx
+<div className="min-h-dvh bg-surface">
+  <div className="mx-auto flex min-h-dvh w-full max-w-[1280px]">
+    <Sidebar />
+    <main className="min-w-0 flex-1 pb-20 md:pb-0">{children}</main>
+  </div>
+  <BottomNav />
+</div>
+```
+
+차이가 미묘하지만 결과는 크다:
+
+```
+[ ......... mx-auto max-w-1280 ......... ]
+[ Sidebar 240 ][ main 1040 ]
+```
+
+사이드바 + main 이 하나의 박스로 1280까지 자라고, 화면이 더 넓으면 좌우 균등 여백. 사이드바와 본문 사이엔 빈 공간이 0. 본문 안의 카드 그리드는 이제 1040 폭을 다 쓰니 카드가 시원하게 펴진다.
+
+추가 디테일 두 가지:
+
+- **`min-w-0`** — flex item의 기본 `min-width: auto` 가 자식의 컨텐츠 크기를 따라간다. 카드 안에 긴 텍스트가 들어가면 main 이 자기 폭을 늘려서 사이드바를 밀어내는 사고가 생긴다. `min-w-0` 으로 0까지 줄어들 수 있게 풀어준다.
+- **본문 컨테이너 제거** — 각 페이지(`/`, `/transactions`, ...)는 이미 `<div className="space-y-3 p-4">` 로 자체 패딩을 잡고 있다. 부모에 추가 컨테이너가 없어도 그대로 보기 좋다.
+
+검증: `next build` 13개 라우트 변동 없음, 타입체크 통과.
+
+### 까만 글씨 — `--primary-foreground` 가 다크 모드에서 검정이었다
+
+`globals.css` 의 토큰 정의를 다시 보자:
+
+```css
+:root {
+  --primary: 156 100% 40%;          /* brand-green */
+  --primary-foreground: 0 0% 100%;  /* white */
+}
+.dark {
+  --primary: 156 100% 42%;
+  --primary-foreground: 222 17% 7%; /* 거의 검정 ← 이게 범인 */
+}
+```
+
+라이트 모드에선 흰색이지만, 다크 모드에선 검정. shadcn 의 기본 토큰을 따라간 흔적이다. 그런데 우리 디자인 시스템의 결정은 **"primary 위엔 흰색"** 한 가지다 — 그린 위에 검정은 대비가 높긴 해도 정서가 맞지 않는다 (뱅크샐러드 톤은 그린 위 흰색 = 신뢰·청결). 다크 모드에서 굳이 검정으로 갈 이유가 없다.
+
+또 다른 가능성도 의심해봤다. 사용자가 본 화면은 라이트 모드 같아 보이는데(흰 배경) 글씨가 검정. 라이트 토큰으론 흰색이 맞으니 — Tailwind 가 cva 안의 클래스를 purge에서 누락했을 수도, 시스템 prefers-dark 가 hydration 차에 잠시 다크 토큰을 적용했을 수도. 단정할 수 없으니 **두 단계로 안전망**:
+
+1. `--primary-foreground` 를 다크 모드에서도 흰색으로 통일.
+2. 버튼 default/destructive 의 텍스트 색을 css var 가 아닌 명시적 `text-white` 로 못박음. 토큰이 어느 시점에 깨져도 흰색은 보장.
+
+```tsx
+default:     "bg-primary text-white shadow-soft hover:bg-primary/95 hover:shadow-pop",
+destructive: "bg-destructive text-white shadow-soft hover:bg-destructive/95",
+```
+
+그린/레드처럼 **"이 색 위엔 흰색"이 디자인 결정으로 고정된 변종**은 토큰 의존을 줄이는 게 안전하다. 토큰은 의미가 흔들릴 수 있는 곳에서만 쓴다 (예: `secondary` 의 fg는 light/dark 에서 의미가 다르니 토큰).
+
+같은 김에 `secondary` / `ghost` / `outline` 변종에도 `text-foreground` 를 명시. 어디선가 자식이 색을 inherit 받지 못해 검정으로 떨어지는 경로를 차단.
+
+### 작은 보너스 — 그림자와 호버 디테일
+
+이번에 한 줄씩 박았다:
+
+- `shadow-soft` 기본 (`0 2px 8px rgba(15,17,21,0.04)`) → 버튼이 종이처럼 떠 있는 느낌.
+- `hover:shadow-pop` → 호버시 살짝 더 떠올라 신뢰감.
+- `hover:bg-primary/95` → 90보다 95가 더 미묘. 클릭 가능하다는 신호만 주고 색이 죽지 않게.
+
+작은 차이지만 — 버튼 하나가 폴리시되면 화면 전체의 인상이 따라온다.
+
+### 검증
+
+```
+$ next build
+✓ Compiled successfully
+   13 routes — sizes unchanged
+```
+
+타입체크 깨끗. 다음 dev 서버 fast refresh 후엔:
+
+- 사이드바와 카드 사이 빈 공간 0
+- 카드 그리드는 1040 폭에서 자연스럽게 2~3 컬럼
+- "+ 새 거래" 버튼은 흰 글씨 + 부드러운 그림자
+- 라이트/다크 양쪽에서 그린 위 흰색 일관
+
+### 배운 것
+
+- **`mx-auto` 는 형제 요소의 폭을 모른다.** 사이드바가 같은 부모 안에 있다면 본문 컨테이너에 별도 mx-auto 를 박지 말 것. 가운데 정렬은 한 단계 위에서 한 번만.
+- **`text-primary-foreground` 같은 의미 토큰이 늘 옳지는 않다.** 그린 위는 항상 흰색이라는 디자인 결정이 있으면, 그건 코드에 직접 박는 편이 토큰 변경 사고를 막는다.
+- **UI 폴리시는 모일수록 비싸진다.** 13개 라우트 다 만들고 나서 이 두 가지를 잡는 데 한 번에 5분이지만, 먼저 다른 컴포넌트들이 같은 패턴을 베껴 갔다면 매 컴포넌트마다 수정해야 했을 것. **첫 사용자(=나) 시연 직후가 폴리시의 골든 타임.**
+
+### 다음
+
+- Phase 3 (M2): `holdings` UI + `account_snapshots` + 순자산 추이.
+- 시간 나면 데스크탑에서 헤더(TopNav)도 한번 더 점검.
+
+---
+
+## #18 · 다시 — 풀 폭, 그리고 진짜로 흰 글씨
+
+> 2026-05-04 · 두 번째 시도
+
+#17 의 변경을 적용한 화면을 사용자에게 보여드렸더니 두 가지를 다시 지적 받았다.
+
+> "화면을 채울 수 있게 수정하라고 했더니, 양옆 여백을 만들어두면 어떡해."
+> "내가 별로라고 했던 버튼도 그대로네?"
+
+내 첫 시도가 왜 두 군데에서 어긋났는지 짚고 — 다시 잡았다.
+
+### 어긋남 ① — `max-w-[1280px]` 라는 타협안
+
+#17 에서 나는 *"사이드바와 본문을 한 mx-auto 박스에 묶고 max-w-[1280px] 로 가운데 정렬"* 이라는 답을 골랐다. 1920×1080 모니터에서 좌우 각 320 정도 균등 여백이 생긴다는 점이 사용자 의도와 어긋났다.
+
+내가 "어색한 빈 공간" 이라고 표현한 것과 사용자가 "화면을 채워라" 라고 한 것 사이의 간극을 보지 못한 것이다. 사용자가 원한 건 *"사이드바 + 본문이 1px도 남기지 말고 화면을 점령하라"* 였고, 나는 *"적당히 가운데로 모아서 가독성을 챙긴다"* 를 내려고 했다. 1인용 데스크탑 가계부에서 — 사용자의 모니터 폭이 곧 작업 공간이라는 관점이 더 맞다.
+
+수정은 한 줄 빼는 것:
+
+```tsx
+// before — max-w-1280 으로 가둔 답
+<div className="mx-auto flex min-h-dvh w-full max-w-[1280px]">
+  <Sidebar />
+  <main className="min-w-0 flex-1">{children}</main>
+</div>
+
+// after — 풀 폭
+<div className="flex min-h-dvh">
+  <Sidebar />
+  <main className="min-w-0 flex-1">{children}</main>
+</div>
+```
+
+이제 1920 모니터에선 사이드바 240 + main 1680, 4K 모니터에선 240 + 3600. 카드 그리드가 viewport 따라 자연스럽게 늘어난다. 와이드 모니터에서 카드가 너무 길어지면 그건 그때 본문 안에서 inner max-w 로 다시 잡으면 된다. 지금은 빈 공간 0이 우선.
+
+### 어긋남 ② — 토큰만 고치고 dev 서버를 못 봤다
+
+#17 에서 두 단계 처리를 했다고 적었다. (1) `--primary-foreground` 다크 모드에서 흰색으로 통일, (2) `text-white` 명시. 그런데 사용자 화면에선 변함 없이 *까만 글씨 처럼* 보였다.
+
+원인을 다시 짚어보면:
+
+- **변경이 적용은 됐다** — `grep "text-white" button.tsx` 로 확인. working tree에 명시적으로 있다.
+- **그런데 사용자가 본 화면은 안 바뀌었다.** 가능성 두 개: (a) dev 서버 HMR이 cva 변경을 한 번에 못 잡고 (cva 는 빌드 타임 평가인데 fast refresh 가 누락하기도), (b) 브라우저 캐시.
+
+어느 쪽이 정답이든 — **사용자 입장에서 "버튼이 그대로" 라는 신호가 들어왔으면 내 책임은 변경을 더 강하게 박아서 어떤 환경에서도 흰글씨가 나오게 만드는 것.** 토큰 한 단계 더, CSS specificity 한 단계 더 끌어올렸다:
+
+```tsx
+default:
+  "bg-primary !text-white font-extrabold shadow-soft " +
+  "hover:bg-[#00B872] hover:shadow-pop " +
+  "[&_svg]:!text-white",
+```
+
+세 가지 차이:
+
+1. **`!text-white`** — Tailwind 의 `!` important 접두사. 어떤 cascade가 끼어들어도 흰색이 이긴다. 보통은 important를 쓰지 않지만 여기는 *"primary 위엔 흰색"* 이 도메인 결정이라 깨지면 안 된다.
+2. **`[&_svg]:!text-white`** — 자식 SVG 의 `currentColor` 가 어디선가 끊겼을 가능성을 차단. + 아이콘 자체가 흰색이 되도록 강제.
+3. **`font-extrabold`** — 글씨 weight를 700→800. 작은 사이즈(`size="sm"` h-9)에서도 흰색이 회색처럼 안 보이게. 안티앨리어싱은 굵을수록 흰색 인상이 강해진다.
+
+추가로 호버 색을 `bg-primary/90` 같이 알파를 주지 않고 `bg-[#00B872]` 으로 직접 박았다. 알파 호버는 배경(흰색 카드) 톤에 따라 그린 채도가 살짝 죽어 보이는 경우가 있다. 한 단계 어두운 그린이 더 명확하다.
+
+### 보너스 — 알약 모양으로 한 번 더
+
+cva 베이스 클래스도 함께 손봤다.
+
+- `rounded-md` (12px) → **`rounded-full`** : 헤더의 작은 액션 버튼은 알약 모양이 더 가벼워 보이고 뱅크샐러드 톤과도 맞다. (디자인 시스템 §8.2 는 *큰 메인 CTA* 에 한해 pill 금지 — 헤더 우상단 sm 액션엔 허용)
+- `gap-2` → `gap-1.5` : 아이콘과 텍스트 사이 간격을 살짝 좁혀서 한 덩어리처럼 보이게.
+- `[&_svg]:stroke-[2.4]` : 흰색 위 그린에서 stroke 1.5 면 아이콘이 가늘어 보인다. 2.4 정도가 자신감 있는 굵기.
+- `active:scale-[0.97]` : 0.98 → 0.97 더 명확한 클릭 피드백.
+- `size.icon` / `icon-sm` 도 `rounded-full` 로 통일 — 일관성.
+
+```tsx
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-1.5 whitespace-nowrap " +
+  "rounded-full transition-all duration-150 ease-out " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 " +
+  "disabled:pointer-events-none disabled:opacity-50 " +
+  "active:scale-[0.97] " +
+  "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:stroke-[2.4]",
+  ...
+```
+
+`size` 도 `default` 의 높이를 `h-12` → `h-11` 로 한 단계 낮춰 풀폭 폼에서도 무겁지 않게. 헤더 안의 sm 액션과 폼 안의 default 사이 위계가 더 자연스럽다.
+
+### 일반화한 교훈
+
+- **사용자가 "양옆 여백" 이라고 말하면 진짜 여백이 0이어야 한다.** "적당히 가운데로 모았다" 같은 디자이너 본능을 한 번 의심한다. 1인용 도구는 사용자 의도를 그대로 이행하는 게 우선.
+- **변경이 화면에 반영 안 됐다는 사용자 신호는 항상 진지하게 받는다.** 내 코드가 맞다고 디버깅을 시작하기 전에, *어떤 환경에서도 깨지지 않는 안전 모드* 로 한 번 더 박는다 (`!`, 직접 hex, `[&_svg]:` 변종). 그게 빠르고 안전하다.
+- **버튼 하나의 인상은 전체 앱 인상의 30%.** 헤더의 한 버튼이 어색하면 전체가 어색해 보인다 — 이번에 모양·웨이트·간격·호버 색까지 함께 손본 이유.
+
+### 검증
+
+- `next build`: ✓ 13 라우트, 사이즈 변동 거의 없음.
+- 사용자가 다음 fast refresh 후 화면을 직접 확인 — **사이드바 + main 이 viewport 끝까지 채움 / "+ 새 거래" 가 알약 모양 흰글씨 그린 버튼**.
+
+### 다음
+
+- Phase 3 (M2): `holdings` UI + `account_snapshots` + 순자산 추이.
+

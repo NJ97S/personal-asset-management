@@ -5,27 +5,27 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-body-l font-bold transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.97] [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:stroke-[2.4]",
   {
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground hover:bg-primary/90",
+          "bg-primary !text-white font-extrabold shadow-soft hover:bg-[#00B872] hover:shadow-pop [&_svg]:!text-white",
         destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+          "bg-destructive !text-white font-extrabold shadow-soft hover:bg-destructive/90 [&_svg]:!text-white",
         secondary:
-          "bg-muted text-foreground hover:bg-muted/70",
-        ghost: "hover:bg-muted/60",
+          "bg-muted text-foreground font-bold hover:bg-muted/70",
+        ghost: "text-foreground font-semibold hover:bg-muted/60",
         outline:
-          "border border-border bg-transparent hover:bg-muted/50",
-        link: "text-primary underline-offset-4 hover:underline",
+          "border border-border bg-card text-foreground font-semibold hover:bg-muted/50",
+        link: "text-primary font-semibold underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-12 px-4 py-2",
-        sm: "h-9 rounded-md px-3 text-body-m",
-        lg: "h-14 rounded-md px-8",
-        icon: "h-10 w-10",
-        "icon-sm": "h-9 w-9",
+        default: "h-11 px-5 text-body-l",
+        sm: "h-9 px-4 text-body-m",
+        lg: "h-14 px-8 text-body-l",
+        icon: "h-10 w-10 rounded-full",
+        "icon-sm": "h-9 w-9 rounded-full",
       },
     },
     defaultVariants: {

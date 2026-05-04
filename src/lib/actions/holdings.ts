@@ -1,0 +1,109 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+import { and, eq } from "drizzle-orm";
+import { nanoid } from "nanoid";
+
+import { db, schema } from "@/db";
+import { ActionError, fail, ok, requireUserId } from "./_helpers";
+
+const assetClasses = [
+  "stock_kr",
+  "stock_us",
+  "etf",
+  "fund",
+  "crypto",
+  "other",
+] as const;
+
+const upsertSchema = z.object({
+  id: z.string().optional(),
+  accountId: z.string().min(1, "계정을 선택해 주세요."),
+  ticker: z.string().min(1, "종목코드를 입력해 주세요.").max(40),
+  name: z.string().max(80).optional().nullable(),
+  exchange: z.string().max(20).optional().nullable(),
+  assetClass: z.enum(assetClasses),
+  quantity: z.coerce.number().min(0, "수량은 0 이상이어야 해요."),
+  avgBuyPrice: z.coerce.number().min(0, "평균가는 0 이상이어야 해요."),
+  manualValue: z
+    .union([z.coerce.number(), z.literal(""), z.undefined()])
+    .optional()
+    .transform((v) => (v === "" || v == null ? null : Number(v))),
+});
+
+function readFormData(formData: FormData) {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of formData.entries()) {
+    if (k.startsWith("$ACTION_")) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+export async function upsertHolding(formData: FormData) {
+  try {
+    const userId = await requireUserId();
+    const parsed = upsertSchema.safeParse(readFormData(formData));
+    if (!parsed.success) {
+      throw new ActionError(
+        parsed.error.issues[0]?.message ?? "입력값을 확인해 주세요."
+      );
+    }
+    const data = parsed.data;
+    const id = data.id ?? nanoid();
+
+    if (data.id) {
+      await db
+        .update(schema.holdings)
+        .set({
+          accountId: data.accountId,
+          ticker: data.ticker,
+          name: data.name ?? null,
+          exchange: data.exchange ?? null,
+          assetClass: data.assetClass,
+          quantity: data.quantity,
+          avgBuyPrice: data.avgBuyPrice,
+          manualValue: data.manualValue ?? null,
+        })
+        .where(
+          and(eq(schema.holdings.id, data.id), eq(schema.holdings.userId, userId))
+        );
+    } else {
+      await db.insert(schema.holdings).values({
+        id,
+        userId,
+        accountId: data.accountId,
+        ticker: data.ticker,
+        name: data.name ?? null,
+        exchange: data.exchange ?? null,
+        assetClass: data.assetClass,
+        quantity: data.quantity,
+        avgBuyPrice: data.avgBuyPrice,
+        manualValue: data.manualValue ?? null,
+      });
+    }
+    revalidatePath("/settings/holdings");
+    revalidatePath("/accounts");
+    return ok({ id });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function deleteHolding(id: string) {
+  try {
+    const userId = await requireUserId();
+    if (!id) throw new ActionError("종목을 찾을 수 없어요.");
+    await db
+      .delete(schema.holdings)
+      .where(
+        and(eq(schema.holdings.id, id), eq(schema.holdings.userId, userId))
+      );
+    revalidatePath("/settings/holdings");
+    revalidatePath("/accounts");
+    return ok({ id });
+  } catch (e) {
+    return fail(e);
+  }
+}

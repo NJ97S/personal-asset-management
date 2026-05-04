@@ -1583,3 +1583,135 @@ drizzle 의 `or` 한 번이면 끝. 일별 헤더의 income/expense 합산도 �
 - Phase 3.3: holdings 관리 UI (`/settings/holdings`) — 종목 등록/편집/보관.
 - Phase 3.4: 순자산 추이 라인 차트 (account_snapshots + 현재 잔액).
 
+---
+
+## #20 · 종목 폼 한 장 — Phase 3.3 holdings
+
+> 2026-05-04
+
+가계부의 자산 추적은 현금 잔액에서 끝나지 않는다. 주식·ETF·크립토·부동산까지 들어가야 진짜 *순자산* 이 된다. 그 첫 단추가 "내가 무엇을 얼마나 들고 있나" 를 적는 곳, 즉 `holdings` 등록 화면이다.
+
+### 한 가지 양식, 두 가지 경로
+
+종목은 자산 클래스에 따라 입력 패턴이 다르다.
+
+- **자동 fetch 가능 (주식/ETF/크립토)** → 사용자는 *수량 + 평균매입가* 만 적는다. 평가 금액은 추후 가격 cron 이 채워준다.
+- **자동 fetch 불가 (부동산·금·기타)** → 사용자가 *평가 금액 자체* 를 직접 입력한다 (`manualValue`).
+
+폼 한 장에 둘 다 담으면서 사용자에게 헷갈림을 안 주는 방법은 — *유형* 셀렉트를 디스크리미네이터로 쓰는 것:
+
+```tsx
+const isManual = assetClass === "other";
+
+{!isManual && (
+  <>
+    <Input id="hd-qty"  inputMode="decimal" placeholder="수량" />
+    <Input id="hd-avg"  inputMode="decimal" placeholder="평균 매입가" />
+  </>
+)}
+
+{isManual && (
+  <>
+    <Input id="hd-manual" inputMode="decimal" placeholder="평가 금액" />
+    <p className="text-caption">가격이 자동으로 갱신되지 않는 자산은 직접 평가금액을 입력해 주세요.</p>
+  </>
+)}
+```
+
+"기타 (수동)" 을 선택하는 순간 수량/평균가 입력란이 사라지고 "평가 금액" 한 줄로 바뀐다. 두 모드의 멘탈 모델이 깔끔히 분리된다.
+
+### Server Action 스키마 — 디스크리미네이션 X, optional + null O
+
+처음엔 transaction 처럼 `discriminatedUnion` 으로 풀까 했지만, 거기보다 단순한 케이스다. 사용자가 같은 row 를 *수동* → *주식* 으로 바꿀 수도 있다. 한 스키마 안에서 둘 다 허용하고, 각 필드를 optional/nullable 로 두는 편이 update flow 에 더 자연스럽다.
+
+```ts
+const upsertSchema = z.object({
+  id: z.string().optional(),
+  accountId: z.string().min(1, "계정을 선택해 주세요."),
+  ticker: z.string().min(1, "종목코드를 입력해 주세요.").max(40),
+  name: z.string().max(80).optional().nullable(),
+  exchange: z.string().max(20).optional().nullable(),
+  assetClass: z.enum(assetClasses),
+  quantity: z.coerce.number().min(0),
+  avgBuyPrice: z.coerce.number().min(0),
+  manualValue: z
+    .union([z.coerce.number(), z.literal(""), z.undefined()])
+    .optional()
+    .transform((v) => (v === "" || v == null ? null : Number(v))),
+});
+```
+
+`manualValue` 의 변환 trick: HTML form 은 빈 문자열을 보내고, JSON 은 `null` 을 보내고, optional 필드는 `undefined` 를 본다. 셋 다 흡수해서 DB에는 `null` 또는 `number` 만 들어가게.
+
+### Soft delete 가 아닌 hard delete
+
+카테고리·계정은 `isArchived` 로 보관 토글을 만들었지만 holdings 는 hard delete 로 갔다. 이유 두 가지:
+
+1. **schema 에 `isArchived` 컬럼이 없다.** 마이그레이션을 한 번 더 굴리는 비용 vs 그냥 row 를 지우는 단순함을 저울질했고, 1인용 + 사용자 본인 결정이라 후자.
+2. **거래 내역과 분리되어 있다.** holdings row 를 지워도 과거 매수/매도 거래(`transactions.type='trade'`)는 그대로 남는다. 손익 계산은 거래 내역으로 다시 계산할 수 있으니 holdings 는 *현재 보유 스냅샷* 의 의미만 갖는다.
+
+다만 클릭 한 번에 사라지면 사고가 날 수 있으니 `confirm()` 한 번:
+
+```tsx
+if (!confirm(`${h.ticker}${h.name ? ` (${h.name})` : ""} 보유 기록을 삭제할까요? 거래 내역은 그대로 남아요.`)) return;
+```
+
+문구에 *"거래 내역은 그대로 남아요"* 를 넣어 사용자의 손실 두려움을 줄였다. 1인용 도구는 마이크로카피 한 줄이 UX 의 절반이다.
+
+### 평가 금액 — 일단 취득원가
+
+manager 리스트의 우측 평가가치는 일단 `quantity × avgBuyPrice` (취득원가) 로 표시. Phase 4 에서 `prices` cron 이 채워지면 이 자리를 *현재가 × 수량* 으로 교체할 거다. 부동산은 `manualValue` 그대로.
+
+```ts
+const evalValue =
+  h.assetClass === "other"
+    ? h.manualValue ?? 0
+    : h.quantity * h.avgBuyPrice;
+```
+
+### 자산 클래스 → 시각 키
+
+도넛/리스트 어디서나 같은 색·아이콘으로 보이도록 매핑 한 곳:
+
+```ts
+const assetIconMap = {
+  stock_kr: "TrendingUp",
+  stock_us: "Globe",
+  etf:      "BarChart3",
+  fund:     "PieChart",
+  crypto:   "Bitcoin",
+  other:    "Coins",
+};
+const assetColorMap = {
+  stock_kr: "#0099FF",  // brand-blue (한국)
+  stock_us: "#7E57C2",  // 보라 (미국)
+  etf:      "#00CDCD",  // brand-cyan
+  fund:     "#F582C6",  // brand-pink
+  crypto:   "#F79009",  // brand-amber
+  other:    "#9CA3AF",  // neutral
+};
+```
+
+`CategoryIcon` 컴포넌트가 hex/HSL 어떤 색이든 14% 알파 컨테이너를 자동 생성해주니 — 컴포넌트 한 번에 자산 구분이 시각적으로 잡힌다.
+
+### `/settings/holdings` — 진입 동선
+
+설정 페이지의 *보유 종목* 카드를 클릭 → manager 화면. accounts 가 0개면 *"먼저 계정을 추가해야 종목을 등록할 수 있어요"* 안내. 이 조건은 server-side 에서 미리 가져온 accounts 배열 길이로 분기.
+
+### 검증
+
+- `tsc --noEmit`: 0 errors.
+- `next build`: 15 라우트, `/settings/holdings` 추가 (325 kB First Load JS — Sheet/Drawer + Form 포함).
+- 시드 사용자 기준 holdings 0건 → 빈 카드 안내 보이는 상태.
+
+### 배운 것
+
+- **두 모드 한 폼은 디스크리미네이터 + conditional 렌더가 답.** 따로 두 폼을 만들면 관리 비용 두 배, 한 폼에 다 박으면 어수선. 셀렉트 한 줄이 두 모드를 나누는 게 가장 깔끔.
+- **soft delete 는 사용자 도메인 모델에서 의미가 있을 때만.** holdings 는 *지금 들고 있는 것* 의 스냅샷이라 보관 상태 자체가 모순. hard delete + 과거 거래는 그대로 가 더 단순하고 직관적.
+- **`confirm()` 의 마이크로카피가 사고 방지의 절반.** 단순 "삭제할까요?" 보다 *"거래 내역은 그대로 남아요"* 처럼 *무엇이 남는지* 를 알려주면 사용자가 안심하고 결정할 수 있다.
+
+### 다음
+
+- Phase 3.4: 순자산 추이 라인 차트.
+- Phase 4: prices cron + 평가가치를 holdings 매니저·계정 잔액에 반영.
+

@@ -4,10 +4,12 @@ import { MetricCard } from "@/components/domain/metric-card";
 import { EmptyState } from "@/components/domain/empty-state";
 import { CategoryDonut, CategoryLegend } from "@/components/charts/category-donut";
 import { DailyBar } from "@/components/charts/daily-bar";
+import { NetWorthLine } from "@/components/charts/networth-line";
 import { auth } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { formatKRW } from "@/lib/utils";
+import { computeNetWorthSeries } from "@/lib/queries/networth-series";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +43,7 @@ export default async function ReportsPage({ searchParams }: PageProps) {
   const prevStart = startOfMonth(prevDate);
   const prevEnd = endOfMonth(prevDate);
 
-  const [thisMonth, lastMonth, categories] = await Promise.all([
+  const [thisMonth, lastMonth, categories, netWorthSeries] = await Promise.all([
     db
       .select()
       .from(schema.transactions)
@@ -64,6 +66,7 @@ export default async function ReportsPage({ searchParams }: PageProps) {
         )
       ),
     db.select().from(schema.categories).where(eq(schema.categories.userId, userId)),
+    computeNetWorthSeries(userId, 12),
   ]);
 
   const expenseTxs = thisMonth.filter((t) => t.type === "expense");
@@ -154,6 +157,32 @@ export default async function ReportsPage({ searchParams }: PageProps) {
             hint="전월 대비"
           />
         </div>
+
+        <Card>
+          <div className="flex items-baseline justify-between pb-3">
+            <h2 className="text-heading-m">순자산 추이 · 12개월</h2>
+            {netWorthSeries.length > 0 ? (
+              <span className="tabular text-body-s text-muted-foreground">
+                현재 {formatKRW(netWorthSeries[netWorthSeries.length - 1]?.netWorth ?? 0)}
+              </span>
+            ) : null}
+          </div>
+          <NetWorthLine data={netWorthSeries} />
+          <div className="mt-2 flex items-center gap-4 text-caption text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2 w-3 rounded-sm bg-brand-green" />
+              순자산
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-0.5 w-3 bg-brand-blue" />
+              자산
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-0.5 w-3 bg-danger" />
+              부채
+            </span>
+          </div>
+        </Card>
 
         <Card>
           <div className="pb-3">

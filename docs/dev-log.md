@@ -1715,3 +1715,171 @@ const assetColorMap = {
 - Phase 3.4: 순자산 추이 라인 차트.
 - Phase 4: prices cron + 평가가치를 holdings 매니저·계정 잔액에 반영.
 
+---
+
+## #21 · 순자산이 어디로 가고 있나 — Phase 3.4 추이 차트
+
+> 2026-05-06
+
+지금 시점의 순자산을 보여주는 카드는 만들었지만 — 한 점은 의미가 약하다. *어제보다 늘었나* 가 진짜 사용자가 알고 싶은 것. 그래서 12개월 시계열을 한 번에 그려주는 차트가 Phase 3.4 의 핵심.
+
+### 데이터 — `account_snapshots` 가 비어 있을 때 어떻게 그릴까
+
+스키마엔 `account_snapshots` 테이블이 있다. 본래 의도는 *월말 cron 이 그 시점의 잔액을 저장* → 시계열 그래프는 그 row 들을 읽어서 그리는 거였다. 그런데 cron 은 Phase 4 작업이고, 시드 사용자엔 거래 자체도 0건. 두 옵션:
+
+A. **snapshot 만 본다** → cron 돌기 전엔 빈 차트. 사용자가 첫 거래 입력해도 차트는 한 달 후에야 의미가 생긴다.
+B. **거래로 reconstruct** → 모든 거래를 fold 해서 매 월말 시점의 잔액을 다시 계산. cron 없어도 입력 즉시 차트가 채워짐.
+
+B를 택했다. 1인용에 cron 의존성을 한 단계 늦추는 게 자연스럽고, **거래가 진실의 원천이라면 snapshot 은 캐시일 뿐** — 캐시가 없어도 원천에서 다시 계산하면 그만이다. 추후 거래가 100k 를 넘으면 snapshot 캐시를 켜는 식으로 옮기면 됨.
+
+### `computeNetWorthSeries` — 컷오프별 fold
+
+```ts
+const cutoffs: Date[] = [];
+for (let i = months - 1; i >= 0; i--) {
+  cutoffs.push(endOfMonth(now.getFullYear(), now.getMonth() - i));
+}
+// 11달 전 ... 1달 전 ... 이번 달 말 (또는 오늘 시점에서 그 달 말까지)
+```
+
+각 컷오프 시점까지 거래를 누적해서 잔액 산정. 최근 12개월이면 12개의 fold. 거래 1만 건이라도 12 × 1만 = 12만 회 산술 → 한 페이지 렌더에 ms 단위.
+
+```ts
+return cutoffs.map((cutoff) => {
+  const balances = new Map<string, number>();
+  for (const a of accounts) balances.set(a.id, a.initialBalance);
+
+  for (const t of txs) {
+    if (t.occurredAt > cutoff) break;  // ← 정렬돼 있으니 break
+    // ... apply tx (income/expense/transfer/trade)
+  }
+
+  // 컷오프 시점에서 isLiabilityAccount 분류로 자산/부채 분리
+  let assets = 0, liabilities = 0;
+  for (const a of accounts) {
+    if (a.isArchived) continue;
+    const bal = balances.get(a.id) ?? a.initialBalance;
+    if (isLiabilityAccount(a.type)) liabilities += Math.max(0, -bal);
+    else assets += bal;
+  }
+  return { month: ..., assets, liabilities, netWorth: assets - liabilities };
+});
+```
+
+거래를 미리 `asc(occurredAt)` 으로 정렬해 가져왔기 때문에 안쪽 루프에서 `if (t.occurredAt > cutoff) break` 한 줄로 컷오프 통과 시 즉시 종료. 시간 절약.
+
+**왜 매 컷오프마다 잔액 Map 을 다시 만드는가?** O(M·N) 이지만 코드가 단순. 더 빠른 길은 거래를 시간순으로 한 번 돌면서 컷오프 두 포인터를 같이 움직이는 것 — 거래 수가 정말 큰 환경에서 의미. 1인 N < 10k, M = 12 이라 지금은 단순함이 우선.
+
+`isLiabilityAccount` 도 #19 의 잔액 함수와 같은 헬퍼를 재사용. 진실의 원천 한 곳을 유지.
+
+### 차트 — `recharts` AreaChart 한 장에 세 라인
+
+라인 셋이 들어간다:
+
+| 데이터 | 시각 표현 | 의도 |
+|--------|---------|------|
+| `netWorth` | 굵은 그린 라인 + 그라데이션 fill | **메인** — 사용자가 가장 자주 보는 숫자 |
+| `assets` | 얇은 파란 점선 | 보조 — 자산이 늘었나 |
+| `liabilities` | 얇은 빨강 점선 | 보조 — 부채가 늘었나 |
+
+순자산 라인만 fill 으로 강조해서 *"이 면적이 점점 위로 올라가야 한다"* 는 시각 메시지를 전달. 자산/부채는 점선이라 부수적이라는 인식.
+
+```tsx
+<defs>
+  <linearGradient id="nw-fill" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="5%"  stopColor="hsl(var(--brand-green))" stopOpacity={0.28} />
+    <stop offset="95%" stopColor="hsl(var(--brand-green))" stopOpacity={0} />
+  </linearGradient>
+</defs>
+...
+<Area type="monotone" dataKey="netWorth"    stroke="...green"  strokeWidth={2}   fill="url(#nw-fill)" />
+<Area type="monotone" dataKey="assets"      stroke="...blue"   strokeWidth={1.5} fill="none" strokeDasharray="4 4" />
+<Area type="monotone" dataKey="liabilities" stroke="...danger" strokeWidth={1.5} fill="none" strokeDasharray="4 4" />
+```
+
+같은 `<AreaChart>` 안에 Area 셋을 주고, 보조 라인은 `fill="none" + strokeDasharray` 로 그리니 라인 차트처럼 보인다. LineChart + AreaChart 두 컴포넌트로 나누지 않고 한 번에.
+
+### 축 디테일
+
+**X축**: `2026-04` 같은 ISO 월 키를 그대로 두면 답답하다. `tickFormatter` 로 `4월` 만 추출.
+
+```ts
+tickFormatter={(v) => Number((v as string).slice(-2)).toString() + "월"}
+```
+
+`Number()` 한 번 거쳐서 `04` → `4` 로 leading zero 제거. 마지막 두 글자만 자르고 변환하니 `2026-04` 도 `2027-01` 도 일관되게 처리.
+
+**Y축**: `compact` 함수로 만/억 단위 표현.
+
+```ts
+const compact = (n) => {
+  const abs = Math.abs(n);
+  if (abs >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}억`;
+  if (abs >= 10_000)      return `${Math.round(n / 10_000)}만`;
+  if (abs >= 1_000)       return `${Math.round(n / 1_000)}천`;
+  return String(n);
+};
+```
+
+순자산이 1.2억이면 `1.2억`, 4500만이면 `4500만` 처럼. 한국어 가계부에서 십억까지 가는 사용자는 거의 없으니 억 단위면 충분.
+
+### 헤더의 작은 디테일 — 현재 순자산 우상단
+
+```tsx
+<div className="flex items-baseline justify-between pb-3">
+  <h2 className="text-heading-m">순자산 추이 · 12개월</h2>
+  <span className="tabular text-body-s text-muted-foreground">
+    현재 {formatKRW(netWorthSeries[netWorthSeries.length - 1]?.netWorth ?? 0)}
+  </span>
+</div>
+```
+
+차트는 시계열을 보여주지만 *지금 이 순간의 숫자* 도 같이 보여주면 사용자가 한 눈에 "지금이 왼쪽 끝과 비교해서 어디" 인지 인지한다.
+
+### 범례 — 한 줄 inline
+
+차트 아래 작은 범례 한 줄. Recharts 의 기본 `Legend` 는 위치/스타일 제어가 까다로워서 직접 그렸다.
+
+```tsx
+<div className="mt-2 flex items-center gap-4 text-caption text-muted-foreground">
+  <span className="inline-flex items-center gap-1.5">
+    <span className="h-2 w-3 rounded-sm bg-brand-green" /> 순자산
+  </span>
+  <span className="inline-flex items-center gap-1.5">
+    <span className="h-0.5 w-3 bg-brand-blue" /> 자산
+  </span>
+  <span className="inline-flex items-center gap-1.5">
+    <span className="h-0.5 w-3 bg-danger" /> 부채
+  </span>
+</div>
+```
+
+순자산 마커는 두꺼운 사각형(차트의 fill 면 표현), 자산/부채는 얇은 라인(점선 표현). 작은 시각 일관성.
+
+### 검증
+
+- `tsc --noEmit`: 0 errors.
+- `next build`: 15 라우트, `/reports` 225 kB First Load JS (네트워스 차트 +3 kB).
+- 시드 사용자 (거래 0건): 12개월 모두 `netWorth = 0` 이라 차트는 평선. 거래 입력 시 즉시 곡선이 채워진다.
+
+### 배운 것
+
+- **시계열은 한 컷오프마다 처음부터 다시 계산이 가장 단순.** 두 포인터·인덱스로 묶어서 한 번에 굴리는 길도 있지만, 거래 수 작은 1인용엔 의미 없는 최적화. 코드 단순함이 더 큰 가치.
+- **AreaChart 한 그릇에 강조-보조를 동시에.** 메인 데이터는 fill 로, 보조는 `fill="none" + strokeDasharray` 로. 두 차트 컴포넌트를 겹치지 않고도 시각 위계가 잡힌다.
+- **차트 위에 *현재 시점 숫자* 를 같이.** 그래프와 텍스트는 다른 인지 채널. 한 눈에 *"오른쪽 끝 = 지금 = 이 숫자"* 가 닫혀야 사용자가 안심한다.
+
+### Phase 3 마무리
+
+Phase 3 (M2 자산 트래킹) 4단계 모두 완료:
+
+- 3.1: 잔액 계산 + 순자산 카드
+- 3.2: 계정 상세 페이지
+- 3.3: holdings 관리 UI
+- 3.4: 순자산 추이 차트
+
+남은 큰 일들:
+
+- **Phase 4 (M3)** 가격 자동 갱신: Vercel Cron + KRX/yfinance/CoinGecko 어댑터 → holdings 평가금액이 진짜 평가가치로 갱신.
+- **Phase 5 (M4)** transfer/trade 거래 입력 폼 (현재는 income/expense 만).
+- **Phase 6 (M5)** PWA: manifest 는 있으니 service worker + 단축키 + 다크모드 토글.
+

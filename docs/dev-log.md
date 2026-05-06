@@ -1883,3 +1883,159 @@ Phase 3 (M2 자산 트래킹) 4단계 모두 완료:
 - **Phase 5 (M4)** transfer/trade 거래 입력 폼 (현재는 income/expense 만).
 - **Phase 6 (M5)** PWA: manifest 는 있으니 service worker + 단축키 + 다크모드 토글.
 
+---
+
+## #22 · 이체와 매매 — Phase 5 거래 종류 완성
+
+> 2026-05-06
+
+스키마는 처음부터 4가지 거래 (income / expense / transfer / trade) 를 받게 만들었고, `createTransaction` Server Action 도 discriminated union 으로 4가지를 다 검증한다. 그런데 UI 는 지출·수입만 받고 있었다. 사용자가 *이체* 나 *주식 매수* 를 입력할 길이 없었다. 이번 단계는 그 비어 있는 입력 경로 두 개를 채우는 일.
+
+### 한 시트, 세 탭 — 4가지 거래를 어떻게 한 화면에 담을까
+
+처음엔 NewTransactionButton 에서 메뉴 드롭다운으로 "지출 / 수입 / 이체 / 매매 새로 만들기" 4가지를 펼치는 안을 잠깐 생각했지만 — 한 번 더 클릭해야 폼이 보이는 게 빠른 입력 흐름과 어긋난다. **시트 안에 탭 3개** 가 답:
+
+1. **지출·수입** (가장 자주 — 디폴트)
+2. **이체**
+3. **매매**
+
+지출과 수입은 입력 형태가 같고 (`type` 디스크리미네이터만 다름) 한 폼으로 통합 가능. 이체와 매매는 입력 셋이 충분히 달라서 별도 컴포넌트.
+
+```tsx
+<Tabs value={kind} onValueChange={...}>
+  <TabsList className="grid w-full grid-cols-3">
+    <TabsTrigger value="expense_income">지출·수입</TabsTrigger>
+    <TabsTrigger value="transfer">이체</TabsTrigger>
+    <TabsTrigger value="trade">매매</TabsTrigger>
+  </TabsList>
+  <TabsContent value="expense_income"><TransactionForm ... /></TabsContent>
+  <TabsContent value="transfer"><TransferForm ... /></TabsContent>
+  <TabsContent value="trade"><TradeForm ... /></TabsContent>
+</Tabs>
+```
+
+세 폼 모두 `createTransaction(formData)` 한 액션으로 모이고, 안쪽의 zod discriminated union 이 분기. 백엔드 한 진입점 / 프론트 세 폼.
+
+### TransferForm — `from → to` 두 셀렉트 + 시각적 화살표
+
+이체는 *어디서 어디로* 가 본질이라, 두 계정 셀렉트를 좌우로 두고 가운데 화살표 아이콘을 둠:
+
+```tsx
+<div className="grid items-end gap-3 sm:grid-cols-[1fr_auto_1fr]">
+  <Select value={fromAccountId}>...</Select>
+  <ArrowRight className="hidden h-5 w-5 sm:block" />
+  <Select value={toAccountId}>...</Select>
+</div>
+```
+
+CSS Grid `[1fr_auto_1fr]` — 좌우 셀렉트는 1fr 씩 늘어나고 가운데는 아이콘 폭만큼만. 모바일 (`sm:block` 미만) 에선 화살표 숨기고 두 셀렉트가 위아래로 stack.
+
+#### 같은 계정 가드 — UI에서도 한 번 더
+
+서버 action 에 이미 `if (input.fromAccountId === input.toAccountId) throw new ActionError(...)` 가드가 있지만, UI 에서도 즉시 빨간 ring + 안내 메시지로 알려주는 편이 사용자 경험에 좋다:
+
+```tsx
+const sameAccount = fromAccountId && toAccountId && fromAccountId === toAccountId;
+...
+<SelectTrigger className={cn(sameAccount && "ring-2 ring-danger")}>
+...
+{sameAccount && <p className="text-danger">같은 계정 간 이체는 만들 수 없어요. 다른 계정을 골라 주세요.</p>}
+```
+
+서브밋 버튼도 `disabled={... || !!sameAccount}`. 사용자가 잘못된 조합을 *제출 누르기 전* 에 알게 됨.
+
+#### 계정이 1개 이하면 탭 자체가 의미 없음
+
+```tsx
+{accounts.length < 2 ? (
+  <p>이체는 두 개 이상의 계정이 있을 때 가능해요.</p>
+) : (
+  <TransferForm ... />
+)}
+```
+
+탭은 보이지만 컨텐츠가 안내문으로 대체. 탭을 disable 하면 사용자는 *왜 못 누르는지* 가 안 보여서 당황한다 — 차라리 누를 수 있게 두고 안 되는 이유를 글로 설명하는 게 친절하다.
+
+### TradeForm — 자동 합산이 핵심
+
+매매 거래는 사용자가 입력하는 건 4개 — *수량 · 단가 · 수수료 · 종목코드*. 그런데 transactions.amount 는 *현금 영향* (= quantity × price + fee) 이다. 사용자에게 amount 를 따로 입력시키면 계산 실수 + 두 번 입력의 불편.
+
+답: amount 를 **read-only 자동 계산** 으로:
+
+```tsx
+const num = (v: string) => Number(v.replace(/,/g, "")) || 0;
+const totalAmount = num(quantity) * num(pricePerUnit) + num(fee);
+
+<div className="rounded-lg bg-muted/40 p-4">
+  <div className="mb-1 text-body-s text-muted-foreground">
+    {tradeKind === "buy" ? "매수 금액" : "매도 금액"} (수량 × 단가 + 수수료)
+  </div>
+  <span className="text-display-l font-extrabold tabular">
+    ₩{formatKRW(totalAmount).replace("₩", "")}
+  </span>
+</div>
+```
+
+사용자가 수량 10 + 단가 75,000 + 수수료 250 입력하면 — 상단에 **₩750,250** 이 즉시 나타난다. 머릿속 계산을 앱이 대신.
+
+#### 매수/매도 토글 — 시멘틱 색을 그대로
+
+```tsx
+<button className={cn(
+  tradeKind === "buy"
+    ? "bg-danger/10 text-danger ring-2 ring-danger"
+    : "bg-success/10 text-success ring-2 ring-success"
+)}>
+```
+
+매수 = 빨강 (지출 변종, 현금이 나감), 매도 = 초록 (수입 변종, 현금이 들어옴). 가계부 다른 화면의 색 약속과 통일.
+
+#### 종목 코드는 항상 대문자
+
+```tsx
+formData.set("ticker", ticker.trim().toUpperCase());
+```
+
+`aapl` 도 `AAPL` 도 `AAPL` 로 정규화. 추후 prices 테이블 join 할 때 ticker 가 공통 키라서, 입력 단계에서 표준화하는 게 안전.
+
+#### 보유 종목은 자동 갱신 안 함 — 명시적으로
+
+매수 거래를 입력해도 holdings 테이블의 quantity / avgBuyPrice 는 자동으로 늘지 않는다. 이는 의도적:
+
+1. **자동 합산은 손실 위험.** 수량 평균가 계산 (가중평균) 이 과거 거래 순서·수수료 처리에 따라 다양해서, 자동 로직이 사용자의 머릿속 계산과 어긋나는 순간 신뢰가 깨진다.
+2. **거래는 *기록*, holdings 는 *현재 상태*.** 두 모델이 분리되어 있어야 사용자가 어느 한쪽을 수정해도 충돌이 안 난다.
+
+UI 에 한 줄 안내:
+
+```tsx
+<p className="text-caption text-muted-foreground">
+  보유 종목 수량/평균가는 자동으로 갱신되지 않아요. 설정 → 보유 종목에서 별도로 관리해 주세요.
+</p>
+```
+
+추후 사용자가 *"왜 매수했는데 holdings 가 안 늘어요?"* 묻기 전에 미리 답한다.
+
+### 잔액에는 이미 영향이 간다
+
+`computeAccountBalances` 가 `case "trade": ... add(t.accountId, sign * t.amount); break;` 으로 trade 도 fold 한다. 즉 trade 입력 → 현금 계정 잔액 즉시 감소 (매수) / 증가 (매도). holdings 가 안 변해도 *현금 측면* 은 진짜로 살아 움직인다. /accounts/[id] 에서도 trade 거래가 바로 보임.
+
+### 검증
+
+- `tsc --noEmit`: 0 errors.
+- `next build`: 15 라우트 그대로, `/transactions` First Load JS 가 +2KB (transfer + trade form 추가분).
+- 시드 사용자에서 transfer / trade 탭 모두 안내문 표시 (계정 < 2개 이거나 거래 미입력) → 가드 동작.
+
+### 배운 것
+
+- **시트 안 탭은 가장 자주 쓰는 걸 디폴트로.** 1인용 가계부에서 지출 입력이 80% — 그게 0번째 탭. 이체·매매는 보조.
+- **자동 계산이 가능한 입력은 자동 계산해야 한다.** 사용자에게 두 번 입력시키면 한 번은 틀리고, 한 번은 짜증난다. 수량 + 단가 + 수수료 → amount 한 줄.
+- **자동화의 *멈추는 지점* 을 명시한다.** "여기까진 자동, 여기부턴 수동" 을 마이크로카피 한 줄에 박으면 사용자 기대치 정렬이 끝난다 — 추후 버그 리포트가 절반 줄어든다.
+
+### Phase 5 마무리
+
+지출 / 수입 / 이체 / 매매 — 네 가지 거래 모두 입력 가능. 이로써 가계부 데이터 모델의 **모든 진입 경로** 가 채워졌다.
+
+남은 것:
+- **Phase 4 (M3)** prices cron — holdings 평가가치를 진짜 시세로 업데이트.
+- **Phase 6 (M5)** PWA: service worker + 단축키 + 다크모드 토글.
+

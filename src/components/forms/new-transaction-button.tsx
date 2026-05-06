@@ -4,8 +4,11 @@ import * as React from "react";
 import { Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ResponsiveSheet } from "./responsive-sheet";
 import { TransactionForm } from "./transaction-form";
+import { TransferForm } from "./transfer-form";
+import { TradeForm } from "./trade-form";
 
 type TxType = "expense" | "income";
 
@@ -31,6 +34,14 @@ export function NewTransactionButton({
   iconOnly = false,
 }: NewTransactionButtonProps) {
   const [open, setOpen] = React.useState(false);
+  const [kind, setKind] = React.useState<
+    "expense_income" | "transfer" | "trade"
+  >("expense_income");
+
+  function handleSuccess() {
+    setOpen(false);
+  }
+
   return (
     <>
       <Button
@@ -47,13 +58,52 @@ export function NewTransactionButton({
         title="새 거래"
         description="3초 안에 한 줄 기록"
       >
-        <TransactionForm
-          categories={categories}
-          accounts={accounts}
-          defaultCategoryIdByKind={defaultCategoryIdByKind}
-          defaultAccountId={defaultAccountId}
-          onSuccess={() => setOpen(false)}
-        />
+        <Tabs
+          value={kind}
+          onValueChange={(v) => setKind(v as typeof kind)}
+          className="w-full"
+        >
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="expense_income">지출·수입</TabsTrigger>
+            <TabsTrigger value="transfer">이체</TabsTrigger>
+            <TabsTrigger value="trade">매매</TabsTrigger>
+          </TabsList>
+          <TabsContent value="expense_income" className="pt-4">
+            <TransactionForm
+              categories={categories}
+              accounts={accounts}
+              defaultCategoryIdByKind={defaultCategoryIdByKind}
+              defaultAccountId={defaultAccountId}
+              onSuccess={handleSuccess}
+            />
+          </TabsContent>
+          <TabsContent value="transfer" className="pt-4">
+            {accounts.length < 2 ? (
+              <p className="py-6 text-center text-body-m text-muted-foreground">
+                이체는 두 개 이상의 계정이 있을 때 가능해요.
+              </p>
+            ) : (
+              <TransferForm
+                accounts={accounts}
+                defaultFromAccountId={defaultAccountId}
+                onSuccess={handleSuccess}
+              />
+            )}
+          </TabsContent>
+          <TabsContent value="trade" className="pt-4">
+            {accounts.length === 0 ? (
+              <p className="py-6 text-center text-body-m text-muted-foreground">
+                먼저 계정을 추가해야 매매 거래를 기록할 수 있어요.
+              </p>
+            ) : (
+              <TradeForm
+                accounts={accounts}
+                defaultAccountId={defaultAccountId}
+                onSuccess={handleSuccess}
+              />
+            )}
+          </TabsContent>
+        </Tabs>
       </ResponsiveSheet>
     </>
   );

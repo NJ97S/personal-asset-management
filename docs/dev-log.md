@@ -2039,3 +2039,501 @@ UI 에 한 줄 안내:
 - **Phase 4 (M3)** prices cron — holdings 평가가치를 진짜 시세로 업데이트.
 - **Phase 6 (M5)** PWA: service worker + 단축키 + 다크모드 토글.
 
+## #23 · 가격이 들어오기 시작했다 — Phase 4 (M3) 가격 자동 갱신
+
+> 2026-05-10
+
+스키마는 `prices(ticker, date, close, currency)` 와 `holdings.lastPricedAt` 을 처음부터 갖고 있었지만 *그 안을 채우는 사람* 이 없었다. holdings 페이지의 종목들은 `avgBuyPrice` 만 보여주고 있었고, *지금* 얼마인지는 사용자가 머릿속으로 다른 앱을 띄워서 확인해야 했다. 이번 단계는 그 비어 있던 자리에 일곱 개 파일과 한 줄의 cron 한 줄을 넣는 작업.
+
+### 어댑터 세 종 — 같은 모양, 다른 데이터 출처
+
+자산 종류가 셋(한국 주식 / 미국 주식·ETF / 크립토)이라 어댑터도 셋. 셋 모두 같은 시그니처를 강제했다:
+
+```ts
+export interface PriceQuote {
+  close: number;
+  currency: 'KRW' | 'USD';
+  asOf: string;       // ISO timestamp
+}
+export async function fetch(
+  ticker: string,
+  opts?: { signal?: AbortSignal }
+): Promise<PriceQuote>;
+```
+
+같은 시그니처여야 디스패처(`src/lib/prices/index.ts`)에서 `assetClass` 분기 한 번으로 끝난다 — 호출자는 어떤 출처인지 신경 쓰지 않는다.
+
+```ts
+switch (holding.assetClass) {
+  case 'stock_kr': return krx.fetch(holding.ticker, opts);
+  case 'stock_us':
+  case 'etf':      return yfinance.fetch(holding.ticker, opts);
+  case 'crypto':   return coingecko.fetch(holding.ticker, opts);
+  default: throw new Error(`unsupported assetClass "${holding.assetClass}"`);
+}
+```
+
+`fund` 와 `other` 는 의도적으로 throw 한다. 펀드는 무료 데이터 소스가 까다로워 MVP에서는 수동 입력(`manualValue`)으로 처리하기로 결정했다 — 자동 fetch 의 *멈추는 지점* 을 코드 한 줄로 명시한 셈.
+
+#### KRX (한국 주식) — 가장 까다로운 곳
+
+한국 주식 무료 가격 소스가 일관되게 좋은 게 없다. KRX 공공데이터포털은 API 키가 필요하고 인증 흐름이 무겁다. 결국 Naver Finance 의 공개 엔드포인트(`api.finance.naver.com/service/itemSummary.nhn?itemcode=...`) 로 시작:
+
+```ts
+const url = `https://api.finance.naver.com/service/itemSummary.nhn?itemcode=${encodeURIComponent(ticker)}`;
+const res = await globalThis.fetch(url, {
+  headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AssetMgmt/1.0)' },
+});
+if (!res.ok) throw new Error(`KRX fetch failed: HTTP ${res.status}`);
+const data = await res.json() as Record<string, unknown>;
+const close = Number(data.now ?? data.closePrice ?? data.close);
+```
+
+응답 키 후보를 `now ?? closePrice ?? close` 셋으로 둔 건 — Naver 의 응답이 ToS 회색지대라 언제 키 이름이 바뀔지 모르기 때문. 한 군데만 잡아두면 깨지면 끝이지만, 후보 셋이면 다음 갱신에 한 번 더 살아남는다. 그래도 안 잡히면 throw — *cron 전체가 죽지 않고* 해당 holding 만 skip 되도록(아래 cron 핸들러 참고).
+
+KRX 어댑터는 *시간이 지나면 가장 먼저 깨질* 자리. `references/` 디렉토리에 KIS OpenAPI(한국투자증권) 마이그레이션 메모를 추후 두기로.
+
+#### yfinance — 비공식이지만 안정적
+
+미국 주식·ETF 는 Yahoo Finance Chart API (`query1.finance.yahoo.com/v8/finance/chart/...`) 가 가장 무난. 비공식이지만 수년째 동작 중:
+
+```ts
+const result = data.chart.result?.[0];
+if (!result) throw new Error(`yfinance: no result for ${ticker}`);
+const close =
+  result.meta.regularMarketPrice ??
+  result.indicators.quote[0]?.close.filter((v): v is number => v !== null).at(-1);
+```
+
+`regularMarketPrice` 가 우선 — 가장 최신 거래 단가. 그게 없으면 `indicators.quote[0].close` 배열의 *null 이 아닌 마지막 값* 으로 폴백. 휴장일 / 데이터 지연으로 마지막 인덱스가 null 인 경우가 종종 있어서 `.filter().at(-1)` 패턴이 필수.
+
+#### CoinGecko — 매핑 테이블이 핵심
+
+크립토는 *티커 → 코인 ID* 매핑이 필요하다. CoinGecko 가 `BTC` 가 아니라 `bitcoin` 을 받기 때문:
+
+```ts
+const COIN_ID_MAP: Record<string, string> = {
+  BTC: 'bitcoin',  ETH: 'ethereum',  USDT: 'tether',
+  SOL: 'solana',   XRP: 'ripple',    DOGE: 'dogecoin',
+  ADA: 'cardano',  BNB: 'binancecoin', AVAX: 'avalanche-2',
+  MATIC: 'matic-network',
+};
+```
+
+상위 10개 코인이면 1인용 가계부의 99% 케이스를 덮는다. 매핑에 없는 티커는 throw — 사용자가 마이너 코인 들고 오면 매핑 테이블에 한 줄 추가하면 된다. 처음부터 CoinGecko `coins/list` 를 캐시해서 동적 매핑하려다 — *50,000 개 코인 인덱싱하는 캐시* 가 1인용 데이터에 비해 너무 무거워서 접었다. 손에 쥔 게 작으면 코드도 작게.
+
+### Cron 핸들러 — *한 종목 실패가 전체를 죽이지 않도록*
+
+`src/app/api/cron/fetch-prices/route.ts`. Vercel Cron 이 매일 09:30 UTC (18:30 KST) 에 GET 으로 호출.
+
+```ts
+const auth = req.headers.get('authorization');
+const isVercelCron = req.headers.get('x-vercel-cron') === '1';
+if (!isVercelCron && auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+}
+```
+
+인증을 두 갈래로 받는다. **운영 중**: Vercel 이 `x-vercel-cron: 1` 헤더로 자체 호출. **수동 실행 / 로컬 테스트**: `Authorization: Bearer ${CRON_SECRET}` 로 curl. 하나라도 맞으면 통과 — Vercel 환경 안에선 secret 이 없어도 cron 이 동작하고, 외부에선 secret 필수.
+
+루프는 *try / catch 를 holding 단위로* 둘러싼다:
+
+```ts
+let ok = 0, failed = 0;
+const errors: string[] = [];
+for (const h of targets) {
+  try {
+    const q = await fetchPriceFor(h);
+    const dateStr = q.asOf.slice(0, 10);  // YYYY-MM-DD
+    await db.insert(schema.prices)
+      .values({ ticker: h.ticker, date: dateStr, close: q.close, currency: q.currency })
+      .onConflictDoUpdate({
+        target: [schema.prices.ticker, schema.prices.date],
+        set: { close: q.close, currency: q.currency },
+      });
+    await db.update(schema.holdings)
+      .set({ lastPricedAt: new Date() })
+      .where(eq(schema.holdings.id, h.id));
+    ok++;
+  } catch (e) {
+    failed++;
+    errors.push(`${h.ticker}: ${(e as Error).message}`);
+  }
+}
+return NextResponse.json({ ok, failed, errors, at: new Date().toISOString() });
+```
+
+핵심:
+
+1. **상위 try 가 아니라 항목 try.** 한 종목의 어댑터가 throw 하면 그 종목만 `failed++` 하고 다음으로 — 5종목 중 1종목이 죽어도 나머지 4종목 가격은 들어온다.
+2. **`onConflictDoUpdate`(`prices.ticker + prices.date` PK).** 같은 날 cron 이 두 번 돌아도 마지막 값으로 덮어쓰기. 휴장일에 어댑터가 같은 close 를 계속 보고해도 idempotent.
+3. **`manualValue != null` 인 holding 은 건너뛴다.** 부동산 같은 수동 자산은 사용자가 입력한 값 그대로 보존 — cron 이 침범하지 않는다.
+4. **응답에 errors 배열을 그대로 반환.** Vercel Logs 에서 어떤 티커가 실패했는지 한 눈에 보임 — 디버깅의 첫 단추.
+
+### vercel.json — 한 줄짜리 cron
+
+```json
+{
+  "crons": [
+    { "path": "/api/cron/fetch-prices", "schedule": "30 9 * * *" }
+  ]
+}
+```
+
+`30 9 * * *` (UTC) = `18:30 KST`. 한국 주식 장마감(15:30 KST)에서 3시간 여유, 미국 장 마감(보통 06:00 KST 다음날) 직후 폴은 다음날 cron 으로. 1인용이라 D+1 종가면 충분 — 실시간이 필요하면 사용자가 holdings 페이지에서 수동 트리거(추후 기능).
+
+### holdings 평가가치 — 거래는 기록, holdings 는 *현재 상태*
+
+cron 이 prices 를 채우면, holdings 페이지가 그 값을 보여줘야 비로소 사용자가 *왜 이걸 매일 돌리는지* 가 닫힌다.
+
+새 query: `src/lib/queries/holdings-valuation.ts`. holdings 별로 ticker 의 가장 최근 prices row 를 join 해서 `marketValue / pnl / pnlPercent / latestClose / latestPriceDate / currency` 를 계산:
+
+```ts
+if (h.manualValue != null) {
+  return { ...h, latestClose: null, marketValue: h.manualValue,
+           pnl: null, pnlPercent: null, currency: 'KRW' };
+}
+if (priceData) {
+  const marketValue = h.quantity * priceData.close;
+  const pnl = (priceData.close - h.avgBuyPrice) * h.quantity;
+  const pnlPercent = h.avgBuyPrice !== 0
+    ? ((priceData.close / h.avgBuyPrice) - 1) * 100
+    : 0;
+  return { ...h, latestClose: priceData.close, latestPriceDate: priceData.date,
+           marketValue, pnl, pnlPercent, currency: priceData.currency };
+}
+// 폴백: 시세도 없고 manualValue 도 없을 때 — 평균가로 보수적으로 채움
+return { ...h, latestClose: null, marketValue: h.quantity * h.avgBuyPrice,
+         pnl: 0, pnlPercent: 0, currency: 'KRW' };
+```
+
+세 갈래 분기에 *각각 의도가 명확* 하다는 점이 중요:
+
+1. **manualValue 우선.** 사용자가 직접 적은 부동산 가치를 시스템이 덮어쓰지 않는다. pnl 은 null — *손익 개념 자체가 없는 자산* 이라는 뜻.
+2. **시세 있음.** 정직하게 quantity × close. pnl 도 평균가 대비 차액으로.
+3. **시세 없음 & manualValue 도 없음.** cron 이 아직 안 돌았거나 어댑터가 실패한 케이스. 사용자에게 0 을 보여주는 건 거짓말이라, 평균가 × 수량으로 *원금 그대로* 표시 + pnl/pnlPercent = 0. UI 에 "현재가 —" 마이크로카피로 *시세가 아직 없다* 를 알린다.
+
+#### UI — 위계가 명확한 한 줄
+
+`HoldingManager` 의 각 row 에 평가금액 + 손익% 를 우측에 묶어서 노출:
+
+```tsx
+<div className="flex flex-col items-end gap-0.5">
+  <div className="tabular text-amount-m">
+    {formatCurrency(h.marketValue, h.currency)}
+  </div>
+  {h.pnlPercent != null && (
+    <div className={cn(
+      "text-body-s tabular",
+      h.pnlPercent > 0 ? "text-success"
+      : h.pnlPercent < 0 ? "text-danger"
+      : "text-muted-foreground"
+    )}>
+      {h.pnlPercent > 0 ? "+" : ""}{h.pnlPercent.toFixed(2)}%
+    </div>
+  )}
+</div>
+```
+
+평가금액(큰 글씨) → 손익%(작은 글씨, 색으로 부호 강조). 사용자는 위에서 아래로 *얼마인지 → 어떻게 변했는지* 를 한 호흡에 읽는다.
+
+`text-success` 는 양수, `text-danger` 는 음수, 0 은 muted — *증감 없음* 도 무관심 색으로 표시해서 시각이 0 에 매달리지 않게.
+
+마지막 갱신 시각은 `formatDistanceToNow(latestPriceDate, { locale: ko })` 로 *"2시간 전 갱신"* 처럼 — 절대 시각보다 *얼마나 신선한지* 가 더 중요한 정보.
+
+#### `manualValue` 에는 "—" 가 아니라 *숨김*
+
+```tsx
+const currentPriceLabel =
+  h.latestClose != null
+    ? `현재 ${formatCurrency(h.latestClose, h.currency)}`
+    : h.manualValue != null
+    ? null                          // ← manualValue 자산은 현재가 자체를 안 보여줌
+    : "현재가 —";
+```
+
+부동산처럼 시세 개념이 없는 자산에 "현재가 —" 를 띄우면 사용자가 *아직 안 들어왔나?* 헷갈린다. manualValue 가 있으면 그 자리 자체를 빈 칸으로 — 정보를 *숨기는* 것도 UX 결정이다.
+
+### computeNetWorthWithHoldings — 기존 함수는 건드리지 않는다
+
+`computeAccountBalances` / `computeNetWorth` 는 **그대로 둔다**. 거래 기반 잔액만 보고 싶을 때(예: 일별 곡선 빠르게)가 있고, 시세까지 합산하면 비싸다 — prices 테이블 join + holdings 루프가 추가되니까.
+
+대신 새 함수 두 개:
+
+```ts
+export async function computeAccountBalancesWithHoldings(userId): Promise<AccountWithBalance[]>
+export async function computeNetWorthWithHoldings(userId): Promise<NetWorthSummary>
+```
+
+stock / crypto 계정의 잔액에 holdings 평가가치를 합산. *"자산 잔액 = 거래로 만든 현금 + 종목 평가가치"* 가 비로소 정직해진다. 기존 함수를 호출하던 dashboard / reports 는 일단 그대로 두고, 추후 화면별로 *진짜 평가가치* 가 필요한 곳만 새 함수로 교체. 두 가지가 공존하는 게 *과도기로서는* 맞는 선택.
+
+### 검증
+
+- `npm run typecheck`: 0 errors.
+- `npm run build`: 16 라우트, `/api/cron/fetch-prices` 동적 라우트로 정상 등록.
+- `npm run lint`: 0 warnings, 0 errors.
+- 시드 사용자 (holdings 0개) → /settings/holdings 빈 상태 그대로. cron 호출 시 `{ ok: 0, failed: 0, errors: [] }` (대상 holding 없음) — *무존재 케이스에서도 깨지지 않음* 확인.
+- (수동) `curl -i http://localhost:3000/api/cron/fetch-prices` → 401, `Authorization: Bearer $CRON_SECRET` 추가 → 200.
+
+### 배운 것
+
+- **공통 인터페이스가 디스패처를 한 줄로 만든다.** 어댑터 셋이 모두 `Promise<PriceQuote>` 하나로 모이니, `index.ts` 의 switch 가 단순해서 *읽는 데 30초* 면 끝. 공통 타입을 *맨 처음에* 박는 비용이 가장 싸다.
+- **외부 데이터 소스 호출은 항목 단위 try/catch.** 5종목 중 1종목 어댑터가 깨졌다고 cron 전체가 die 하면 — *나머지 4종목의 신선한 가격* 도 같이 잃는다. 손실의 단위를 가능한 한 작게.
+- **cron 의 응답 JSON 에 errors 배열을 그대로.** 운영 중 어떤 티커가 실패했는지 Vercel Logs 에서 한 줄로 보임. 별도 모니터링 시스템 없이도 *문제 발생 직후 30초* 안에 원인이 보인다.
+- **정보를 *숨기는* 것도 UX 결정.** "현재가 —" 가 항상 친절한 게 아니다 — manualValue 자산엔 그 칸 자체가 의미 없으니 숨김. *비어있는 게 더 정확한 정보* 일 때가 있다.
+- **두 가지 잔액 계산 함수가 공존하는 건 *과도기에선 맞다*.** 거래 기반(빠름) / 평가가치 포함(정확) — 화면이 원하는 정보가 다르니 함수도 둘. 한 함수로 통합하면 *느린 화면이 빠른 화면을 끌어내린다*.
+
+---
+
+## #24 · 매일 들고 다니는 앱이 되기까지 — Phase 6 (M5) PWA · 단축키 · 다크모드
+
+> 2026-05-10
+
+manifest.json 은 처음부터 박아 뒀지만 — 정작 *Add to Home* 을 눌러 본 적이 없었다. 오프라인 진입은 빈 페이지. 단축키는 없어서 데스크탑에서 새 거래를 입력하려면 마우스를 잡아야 했고, 사용자가 시스템 다크모드를 켜도 *내 자산 앱만 항상 라이트* 였다 — `next-themes` 를 import 만 해 두고 토글을 노출 안 해 뒀으니까. 이번 단계는 *네 가지 작은 갭* 을 한 번에 메우는 일.
+
+### 1) Service Worker — 오프라인 첫 페이지가 비어 있지 않게
+
+`public/sw.js` 는 35 줄짜리 vanilla. Workbox 같은 빌더 없이 직접 작성:
+
+```js
+const CACHE_NAME = 'app-shell-v1';
+const PRECACHE_URLS = ['/', '/manifest.json', '/icon.svg', '/icon-maskable.svg', '/favicon.svg'];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)).then(() => self.skipWaiting())
+  );
+});
+```
+
+App shell 다섯 개만 사전 캐시. 더 늘려도 되지만 — *처음 진입할 때 보이는 것* 만 있으면 충분. 페이지 데이터(거래 목록 등)는 fetch 핸들러의 *network-first → fallback to cache* 패턴으로 자연스럽게 채워진다:
+
+```js
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET') return;
+
+  const url = new URL(request.url);
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/_next/data/')) return;
+
+  event.respondWith(
+    fetch(request).then((response) => {
+      const copy = response.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+      return response;
+    }).catch(() => caches.match(request))
+  );
+});
+```
+
+#### 패스스루가 더 중요했다
+
+핵심은 *어떤 요청을 SW 가 건드리지 않는지* 다:
+
+1. **POST/PUT/DELETE**: 쓰기 작업은 SW 건너뛴다. Server Action / mutation 이 캐시되면 *데이터가 망가진다*.
+2. **`/api/`**: 인증 쿠키, NextAuth 세션, cron 엔드포인트, CSV export — 캐시되면 안 되는 것들.
+3. **`/_next/data/`**: Next.js RSC 데이터 라우트. 자체 캐싱이 이미 잘 되어 있어서 SW 가 끼면 *캐시 무효화 타이밍이 어긋난다*.
+
+빠른 화면을 만들려고 모든 걸 캐시하면 *데이터가 거짓말* 을 한다 — 1인용 가계부에서 가장 치명적인 버그. 보수적으로 시작.
+
+#### activate 에서 옛 캐시 청소
+
+```js
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
+});
+```
+
+`CACHE_NAME = 'app-shell-v1'` 을 `v2` 로 올리면 다음 activate 에서 v1 이 자동 삭제. *수동 invalidation 의 첫 단추* — 추후 PRECACHE_URLS 를 변경할 때 버전만 올리면 끝.
+
+### 2) SW 등록은 *production only*
+
+`src/components/pwa/sw-register.tsx`:
+
+```tsx
+'use client';
+import { useEffect } from 'react';
+export function SWRegister() {
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (process.env.NODE_ENV !== 'production') return;
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }, []);
+  return null;
+}
+```
+
+세 가지 가드. 특히 **개발 모드 차단** 은 의도적 — `next dev` 에서 SW 가 동작하면 HMR/리로드와 fight 한다. 캐시된 옛 청크를 잡고 *새 빌드가 안 보이는* 디버깅 지옥. *production* 에서만 켜는 게 한 번 데어 본 사람만 아는 작은 안전장치.
+
+### 3) Install Prompt — 14일 silent
+
+`beforeinstallprompt` 이벤트는 브라우저(주로 Android Chrome)가 *지금이 설치 권유하기 좋은 타이밍이야* 라고 알려준다. 그대로 두면 브라우저가 자체 배너를 띄우는데, 우리 앱에서 직접 시점/디자인을 통제하려면 `preventDefault()` + 이벤트 객체 보관:
+
+```tsx
+const handler = (e: Event) => {
+  e.preventDefault();
+  setDeferredPrompt(e as BeforeInstallPromptEvent);
+};
+```
+
+화면 하단 가운데에 떠 있는 작은 카드 — "홈 화면에 추가하시겠어요?" + 추가 / 닫기. 닫으면 localStorage 에 timestamp 박고 14일 동안 안 뜬다:
+
+```tsx
+const dismissed = localStorage.getItem('pwa-install-dismissed-at');
+if (dismissed && Date.now() - Number(dismissed) < TWO_WEEKS) return;
+```
+
+*하루 세 번 같은 권유* 가 가장 빠르게 사용자를 놓치는 길이다. 한 번 거절했으면 *2주 동안* 본인 흐름을 존중. 거절했지만 *나중에 마음 바뀐* 사용자는 브라우저 메뉴의 "앱 설치"가 그대로 살아 있다.
+
+iOS Safari 는 `beforeinstallprompt` 자체를 안 발화 — 그냥 컴포넌트가 null 을 렌더한다. 안내 흐름은 *플랫폼이 다르면 다르게 처리* 가 정직하다.
+
+### 4) error 바운더리 세 종 — 어디서 깨져도 빈 화면이 되지 않게
+
+Next.js App Router 의 에러 바운더리는 *위치별로 다른 파일* 이 받는다:
+
+```
+src/app/(app)/error.tsx        — (app) 그룹 내 에러 (대부분의 페이지)
+src/app/global-error.tsx       — root layout 자체가 깨졌을 때 fallback (html/body 직접 렌더)
+src/app/(app)/not-found.tsx    — 404
+```
+
+세 파일 모두 *한국어로* + *다시 시도 / 홈으로* 버튼만. 사용자가 *내가 무엇을 잘못 눌렀는지* 추적할 수 있는 단서를 주려면, 영어 stack trace 가 그대로 노출되면 안 된다 — 디테일은 콘솔로 (`useEffect(() => console.error(error), [error])`). 사용자에겐 *문제가 발생했어요. 잠시 후 다시 시도해 주세요* 가 충분.
+
+`global-error.tsx` 만 *root layout 자체* 가 깨지는 케이스(매우 드물지만 catastrophic)를 위해 `<html><body>` 까지 직접 렌더해야 한다 — Next.js 가 이 파일을 fallback root 로 사용하기 때문.
+
+### 5) 단축키 hook — input 안에선 절대 발화 안 함
+
+`src/lib/hooks/use-hotkeys.ts` 는 30 줄짜리 단순 훅이지만 *두 가지 가드* 가 핵심:
+
+```ts
+function handler(e: KeyboardEvent) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;     // 시스템 단축키 보호
+
+  const target = e.target as HTMLElement;
+  if (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.isContentEditable
+  ) return;                                             // 텍스트 입력 중엔 차단
+
+  const key = e.key.toLowerCase();
+  const cb = bindings[key];
+  if (cb) { e.preventDefault(); cb(e); }
+}
+```
+
+**가장 큰 함정** 은 사용자가 거래 메모에 *"new"* 를 입력하다가 `n` 을 누른 순간 — 새 거래 시트가 *덮쳐서* 텍스트를 삼키는 것. 그래서 INPUT/TEXTAREA/contentEditable 에서는 무조건 패스. cmd/ctrl/alt 가 눌려 있어도 패스(브라우저 단축키 우선).
+
+#### 새 거래 시트 열기 — 커스텀 이벤트로
+
+`NewTransactionButton` 은 *자기 안에서 시트 open state 를 들고 있는* 컴포넌트(Sheet 의 `open` 상태). hotkey 에서 그 state 를 *바깥에서 set* 하려면 prop 을 lift up 해야 하는데 — 그러면 page → layout → button 까지 prop drilling 사슬이 길어진다. 
+
+선택한 길: *window 커스텀 이벤트* 로 디커플링.
+
+```tsx
+// src/components/forms/transaction-hotkey-listener.tsx
+export function TransactionHotkeyListener() {
+  useHotkeys({
+    n: () => window.dispatchEvent(new Event('open-new-transaction')),
+  });
+  return null;
+}
+```
+
+```tsx
+// NewTransactionButton 내부
+useEffect(() => {
+  const open = () => setOpen(true);
+  window.addEventListener('open-new-transaction', open);
+  return () => window.removeEventListener('open-new-transaction', open);
+}, []);
+```
+
+Listener 컴포넌트는 *비주얼이 없는 컨트롤러* — `return null`. transactions 페이지 상단에 한 줄 박으면 끝:
+
+```tsx
+<>
+  <TransactionHotkeyListener />
+  <NewTransactionButton accounts={accounts} categories={categories} />
+  ...
+</>
+```
+
+prop drilling 없이 *완전히 같은 결과* — 그리고 추후 다른 페이지에서도 `window.dispatchEvent('open-new-transaction')` 만 부르면 새 거래 시트가 열린다. 결합도가 0 인 게 아니라 *결합 지점이 한 군데로 모임*.
+
+### 6) 다크모드 토글 — 3-state 사이클 + hydration 가드
+
+`next-themes` 는 이미 root layout 에 박혀 있었고 (`<ThemeProvider attribute="class" defaultTheme="system" enableSystem>`), 단지 *사용자가 토글할 자리* 가 없었다. `src/components/theme-toggle.tsx` 추가:
+
+```tsx
+const themes = ['light', 'dark', 'system'] as const;
+const icons = {
+  light: <Sun className="h-4 w-4" />,
+  dark:  <Moon className="h-4 w-4" />,
+  system: <Monitor className="h-4 w-4" />,
+};
+
+function cycle() {
+  const idx = themes.indexOf(current);
+  setTheme(themes[(idx + 1) % themes.length]);
+}
+```
+
+3-state 사이클(라이트 → 다크 → 시스템 → 라이트 ...). 한 번 클릭에 *현재 → 다음*. DropdownMenu 도 고민했지만 아이콘 한 칸 + sr-only 라벨이면 충분 — *덜 클릭 가능한 면적이 클릭당 가치를 올린다*.
+
+#### Hydration 가드는 그냥 `disabled` 버튼
+
+```tsx
+const [mounted, setMounted] = useState(false);
+useEffect(() => { setMounted(true); }, []);
+
+if (!mounted) {
+  return <Button variant="ghost" size="icon" className="h-10 w-10" disabled />;
+}
+```
+
+`useTheme()` 는 SSR 시 `undefined` 를 돌려준다 — 첫 렌더에서 아이콘을 그리려고 하면 *hydration mismatch* 가 콘솔에 떠나간다. mounted 플래그 + 빈 disabled 버튼으로 자리만 잡고, mount 후 *진짜 아이콘* 렌더. 시각적으로는 *깜빡임 한 프레임* 인데, 사용자가 알아챌 수도 없는 시간.
+
+#### top-nav 는 *기본 슬롯* 으로 받기
+
+```tsx
+<div className="ml-auto flex items-center gap-1">
+  {right}
+  <ThemeToggle />
+</div>
+```
+
+기존 페이지들이 `right` prop 으로 액션 아이콘을 넘기고 있었는데 — `right ?? <ThemeToggle />` 로 두면 *right 가 있는 페이지는 ThemeToggle 이 사라진다*. 그래서 right 와 ThemeToggle 을 *같이* 노출. 페이지가 우상단에 별도 액션을 두든 안 두든, 테마 토글은 *항상* 거기에 있음 — 사용자 기대치가 안정.
+
+### 검증
+
+- `npm run typecheck`: 0 errors.
+- `npm run build`: 0 errors. 16 라우트 (이전 14 → +2: `/_not-found`, 글로벌 에러는 라우트가 아니라 pages 가 아님).
+- `npm run lint`: 0 warnings, 0 errors.
+- (수동) `n` 키 → /transactions 에서 새 거래 시트 open. INPUT 포커스 상태에선 시트 열리지 않음 확인.
+- (수동) ThemeToggle 클릭 → light → dark → system 순환. 시스템 다크모드 전환에 즉시 반응.
+
+### 배운 것
+
+- **SW 가 *건드리지 않는 영역* 을 잘 정의하는 게 캐시 정책의 절반.** POST 와 `/api/` 와 `/_next/data/` — 이 세 개를 빼지 않으면 *데이터가 거짓말* 을 시작한다. 1인용 가계부에서 가장 치명적인 종류의 버그.
+- **개발 모드에선 SW 등록 안 한다.** HMR 과 fight 하면 *옛 청크를 잡은 SW* 때문에 새 빌드가 안 보이는 디버깅 지옥. `process.env.NODE_ENV !== 'production' return;` 한 줄이 미래의 본인을 구한다.
+- **Install prompt 는 *한 번 거절 → 14일 silent*.** 사용자가 거절 의사를 표현했으면 그 의사를 *길게* 존중. 두 번째 권유는 그 자체로 trust 비용.
+- **단축키 hook 의 두 가지 가드 = INPUT 차단 + modifier 차단.** 이게 빠지면 사용자가 *메모에 "new" 를 입력하는 도중 시트가 열려서 텍스트가 사라진다*. 한 번 당해 보면 절대 잊지 못함.
+- **window CustomEvent 는 *prop drilling 의 빠른 우회로*.** 이벤트 디스패치는 비싸지 않고, listener 컴포넌트로 컨트롤러를 분리하면 *비주얼 없는 인스턴스* 가 나타난다 — 깨끗하게. 다만 남용하면 *데이터 흐름이 안 보이는* 코드가 되니 *드물게* 만 쓴다.
+- **next-themes + Server Components = mount 가드 필수.** `useTheme()` 가 SSR 에서 undefined 인 첫 프레임을 *비어 있는 placeholder* 로 받아두지 않으면 hydration mismatch. 한 번 익히면 react 의 모든 client-only state 에 같은 패턴 적용.
+
+### Phase 6 마무리
+
+PWA 설치 가능 + 오프라인 첫 진입 + 키보드 단축키 + 다크모드 토글 + 에러 바운더리 — *매일 들고 다니는 앱* 이 되기 위한 마지막 다섯 갭이 닫혔다.
+
+남은 큰 일은 이제 둘:
+
+- **운영 검증**: 실제 holdings 를 등록하고 cron 이 실제 시세를 가져오는지 (외부 API 가 흔들릴 때 어떻게 동작하는지). `CRON_SECRET` Vercel env 설정.
+- **선택적 확장**: CSV import (현재는 export 만), 다중 통화 환전, LLM 카테고리 추천. 모두 *Out of MVP* 이지만 사용해 보면서 결정.
+
+데이터 모델, 거래 입력, 자산 트래킹, 가격 자동 갱신, PWA — 이 다섯 축이 모두 살아 움직인다. *첫 거래 부터 매일 들고 다니는 가계부* 까지의 거리는 더 이상 코드가 아니라 *습관* 만 남았다.

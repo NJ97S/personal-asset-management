@@ -4,6 +4,7 @@ import { ListItem } from "@/components/domain/list-item";
 import { DateGroupHeader } from "@/components/domain/date-group-header";
 import { EmptyState } from "@/components/domain/empty-state";
 import { NewTransactionButton } from "@/components/forms/new-transaction-button";
+import { TransactionHotkeyListener } from "@/components/forms/transaction-hotkey-listener";
 import { auth } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { desc, eq } from "drizzle-orm";
@@ -72,6 +73,7 @@ export default async function TransactionsPage() {
 
   return (
     <>
+      <TransactionHotkeyListener />
       <TopNav title="가계부" right={newButton} />
       <div className="p-4">
         {txs.length === 0 ? (

@@ -34,6 +34,14 @@ export function NewTransactionButton({
   iconOnly = false,
 }: NewTransactionButtonProps) {
   const [open, setOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    function handleOpen() {
+      setOpen(true);
+    }
+    window.addEventListener("open-new-transaction", handleOpen);
+    return () => window.removeEventListener("open-new-transaction", handleOpen);
+  }, []);
   const [kind, setKind] = React.useState<
     "expense_income" | "transfer" | "trade"
   >("expense_income");

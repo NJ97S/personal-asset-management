@@ -5,6 +5,7 @@ import { ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { cn } from "@/lib/utils";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 interface TopNavProps {
   title?: string;
@@ -45,7 +46,10 @@ export function TopNav({ title, back, right, className }: TopNavProps) {
       {title ? (
         <h1 className="text-heading-m text-foreground">{title}</h1>
       ) : null}
-      {right ? <div className="ml-auto flex items-center gap-1">{right}</div> : null}
+      <div className="ml-auto flex items-center gap-1">
+        {right}
+        <ThemeToggle />
+      </div>
     </header>
   );
 }

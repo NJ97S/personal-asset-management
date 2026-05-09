@@ -3,6 +3,7 @@ import { HoldingManager } from "@/components/forms/holding-manager";
 import { auth } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, eq } from "drizzle-orm";
+import { getHoldingsWithValuation } from "@/lib/queries/holdings-valuation";
 
 export const dynamic = "force-dynamic";
 
@@ -11,11 +12,7 @@ export default async function HoldingsSettingsPage() {
   if (!session?.user?.id) return null;
 
   const [holdings, accounts] = await Promise.all([
-    db
-      .select()
-      .from(schema.holdings)
-      .where(eq(schema.holdings.userId, session.user.id))
-      .orderBy(schema.holdings.ticker),
+    getHoldingsWithValuation(session.user.id),
     db
       .select()
       .from(schema.accounts)
@@ -42,6 +39,12 @@ export default async function HoldingsSettingsPage() {
             quantity: h.quantity,
             avgBuyPrice: h.avgBuyPrice,
             manualValue: h.manualValue,
+            latestClose: h.latestClose,
+            latestPriceDate: h.latestPriceDate,
+            marketValue: h.marketValue,
+            pnl: h.pnl,
+            pnlPercent: h.pnlPercent,
+            currency: h.currency,
           }))}
           accounts={accounts.map((a) => ({
             id: a.id,

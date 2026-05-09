@@ -4,6 +4,8 @@ import * as React from "react";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useTransition } from "react";
+import { formatDistanceToNow } from "date-fns";
+import { ko } from "date-fns/locale";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +13,7 @@ import { CategoryIcon } from "@/components/domain/category-icon";
 import { ResponsiveSheet } from "./responsive-sheet";
 import { HoldingForm } from "./holding-form";
 import { deleteHolding } from "@/lib/actions/holdings";
-import { formatKRW } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 type AssetClass =
   | "stock_kr"
@@ -31,6 +33,12 @@ type Holding = {
   quantity: number;
   avgBuyPrice: number;
   manualValue: number | null;
+  latestClose: number | null;
+  latestPriceDate: string | null;
+  marketValue: number;
+  pnl: number | null;
+  pnlPercent: number | null;
+  currency: string;
 };
 
 interface HoldingManagerProps {
@@ -64,6 +72,23 @@ const assetColorMap: Record<string, string> = {
   crypto: "#F79009",
   other: "#9CA3AF",
 };
+
+function formatCurrency(amount: number, currency: string): string {
+  if (currency === "USD") {
+    const abs = Math.abs(amount);
+    const formatted = new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(abs);
+    return amount < 0 ? `-$${formatted}` : `$${formatted}`;
+  }
+  // KRW and fallback
+  const abs = Math.abs(amount);
+  const formatted = new Intl.NumberFormat("ko-KR", {
+    maximumFractionDigits: 0,
+  }).format(abs);
+  return amount < 0 ? `-₩${formatted}` : `₩${formatted}`;
+}
 
 export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
   const [open, setOpen] = React.useState(false);
@@ -124,10 +149,24 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
         <Card className="overflow-hidden p-0">
           <ul className="divide-y divide-border">
             {holdings.map((h) => {
-              const evalValue =
-                h.assetClass === "other"
-                  ? h.manualValue ?? 0
-                  : h.quantity * h.avgBuyPrice;
+              const avgPriceLabel =
+                h.assetClass !== "other"
+                  ? `평균 ${formatCurrency(h.avgBuyPrice, h.currency)}`
+                  : null;
+              const currentPriceLabel =
+                h.latestClose != null
+                  ? `현재 ${formatCurrency(h.latestClose, h.currency)}`
+                  : h.manualValue != null
+                  ? null
+                  : "현재가 —";
+              const updatedLabel =
+                h.latestPriceDate != null
+                  ? formatDistanceToNow(new Date(h.latestPriceDate), {
+                      addSuffix: true,
+                      locale: ko,
+                    })
+                  : null;
+
               return (
                 <li key={h.id} className="flex items-center gap-3 px-4 py-3">
                   <CategoryIcon
@@ -141,13 +180,34 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
                     </p>
                     <p className="text-body-s text-muted-foreground">
                       {assetLabelMap[h.assetClass]} · {accountName(h.accountId)}
-                      {h.assetClass !== "other"
-                        ? ` · ${h.quantity} × ${formatKRW(h.avgBuyPrice)}`
-                        : ""}
+                      {avgPriceLabel ? ` · ${avgPriceLabel}` : ""}
+                      {currentPriceLabel ? ` · ${currentPriceLabel}` : ""}
                     </p>
+                    {updatedLabel && (
+                      <p className="text-body-xs text-muted-foreground/60">
+                        {updatedLabel} 갱신
+                      </p>
+                    )}
                   </div>
-                  <div className="tabular text-amount-m">
-                    {formatKRW(evalValue)}
+                  <div className="flex flex-col items-end gap-0.5">
+                    <div className="tabular text-amount-m">
+                      {formatCurrency(h.marketValue, h.currency)}
+                    </div>
+                    {h.pnlPercent != null && (
+                      <div
+                        className={cn(
+                          "text-body-s tabular",
+                          h.pnlPercent > 0
+                            ? "text-success"
+                            : h.pnlPercent < 0
+                            ? "text-danger"
+                            : "text-muted-foreground"
+                        )}
+                      >
+                        {h.pnlPercent > 0 ? "+" : ""}
+                        {h.pnlPercent.toFixed(2)}%
+                      </div>
+                    )}
                   </div>
                   <Button
                     size="icon-sm"

@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db";
+import { getHoldingsWithValuation } from "./holdings-valuation";
 
 export type AccountWithBalance = typeof schema.accounts.$inferSelect & {
   balance: number;
@@ -93,4 +94,50 @@ export function isLiabilityAccount(
   type: typeof schema.accountTypeEnum[number]
 ): boolean {
   return LIABILITY_TYPES.has(type);
+}
+
+const HOLDINGS_ACCOUNT_TYPES = new Set<typeof schema.accountTypeEnum[number]>([
+  "stock",
+  "crypto",
+]);
+
+export async function computeAccountBalancesWithHoldings(
+  userId: string
+): Promise<AccountWithBalance[]> {
+  const [accounts, holdingsValuation] = await Promise.all([
+    computeAccountBalances(userId),
+    getHoldingsWithValuation(userId),
+  ]);
+
+  // Sum holdings marketValue per accountId
+  const holdingsByAccount = new Map<string, number>();
+  for (const h of holdingsValuation) {
+    holdingsByAccount.set(
+      h.accountId,
+      (holdingsByAccount.get(h.accountId) ?? 0) + h.marketValue
+    );
+  }
+
+  return accounts.map((a) => {
+    if (!HOLDINGS_ACCOUNT_TYPES.has(a.type)) return a;
+    const holdingsTotal = holdingsByAccount.get(a.id) ?? 0;
+    return { ...a, balance: a.balance + holdingsTotal };
+  });
+}
+
+export async function computeNetWorthWithHoldings(
+  userId: string
+): Promise<NetWorthSummary> {
+  const accounts = await computeAccountBalancesWithHoldings(userId);
+  let assets = 0;
+  let liabilities = 0;
+  for (const a of accounts) {
+    if (a.isArchived) continue;
+    if (LIABILITY_TYPES.has(a.type)) {
+      liabilities += Math.max(0, -a.balance);
+    } else {
+      assets += a.balance;
+    }
+  }
+  return { assets, liabilities, netWorth: assets - liabilities, accounts };
 }

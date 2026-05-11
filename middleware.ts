@@ -1,4 +1,7 @@
-import { auth } from "@/lib/auth";
+import NextAuth from "next-auth";
+import authConfig from "@/lib/auth/config";
+
+const { auth } = NextAuth(authConfig);
 
 const PUBLIC_PATHS = ["/login", "/api/auth"];
 
@@ -20,5 +23,4 @@ export default auth((req) => {
 
 export const config = {
   matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico|manifest.json|sw.js).*)"],
-  runtime: "nodejs",
 };

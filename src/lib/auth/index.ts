@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "@/db";
 import { verifyPassword } from "./password";
+import authConfig from "./config";
 
 declare module "next-auth" {
   interface Session {
@@ -20,32 +21,21 @@ const credentialsSchema = z.object({
 });
 
 /**
- * `AUTH_SECRET` is required by Auth.js. In development we fall back to a
- * stable, well-known constant so the dev server "just works" right after
- * `npm install`. In production we let Auth.js throw so missing config
- * cannot ship silently.
+ * Full auth config — extends the edge-safe base (./config) with:
+ *  - Drizzle DB adapter (Node-only, can't run in Edge)
+ *  - Credentials provider with authorize() that hits the DB
+ *
+ * Middleware imports ./config directly (no DB), this file is used by
+ * Server Components, Server Actions, and the /api/auth route handlers.
  */
-const isDev = process.env.NODE_ENV !== "production";
-const authSecret =
-  process.env.AUTH_SECRET ??
-  process.env.NEXTAUTH_SECRET ??
-  (isDev
-    ? "dev-only-DO-NOT-USE-IN-PROD-asset-management-7d8a2f9c1e6b3a4f"
-    : undefined);
-
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  secret: authSecret,
-  trustHost: true,
+  ...authConfig,
   adapter: DrizzleAdapter(db, {
     usersTable: schema.users,
     accountsTable: schema.accounts_auth,
     sessionsTable: schema.sessions,
     verificationTokensTable: schema.verificationTokens,
   }),
-  session: { strategy: "jwt" },
-  pages: {
-    signIn: "/login",
-  },
   providers: [
     Credentials({
       credentials: {
@@ -73,18 +63,4 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
     }),
   ],
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.id = user.id;
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      if (token?.id && session.user) {
-        session.user.id = token.id as string;
-      }
-      return session;
-    },
-  },
 });

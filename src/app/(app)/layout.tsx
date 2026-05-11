@@ -1,11 +1,16 @@
+import { redirect } from "next/navigation";
+import { auth } from "@/lib/auth";
 import { Sidebar } from "@/components/nav/sidebar";
 import { BottomNav } from "@/components/nav/bottom-nav";
 
-export default function AppShellLayout({
+export default async function AppShellLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login");
+
   return (
     <div className="flex min-h-dvh bg-surface">
       <Sidebar />

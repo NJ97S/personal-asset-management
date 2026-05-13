@@ -11,7 +11,7 @@ import { db, schema } from "@/db";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { formatKRW } from "@/lib/utils";
 import { loadFormDefaults } from "@/lib/queries/dashboard";
-import { computeNetWorth } from "@/lib/queries/balances";
+import { computeNetWorthWithHoldings } from "@/lib/queries/balances";
 
 export const dynamic = "force-dynamic";
 
@@ -83,7 +83,7 @@ export default async function HomePage() {
   const [data, defaults, netWorth] = await Promise.all([
     loadDashboard(session.user.id),
     loadFormDefaults(session.user.id),
-    computeNetWorth(session.user.id),
+    computeNetWorthWithHoldings(session.user.id),
   ]);
   const isEmpty = data.recent.length === 0 && data.accountsCount === 0;
   const now = new Date();

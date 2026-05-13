@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/domain/empty-state";
 import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, desc, eq, or } from "drizzle-orm";
-import { computeAccountBalances, isLiabilityAccount } from "@/lib/queries/balances";
+import { computeAccountBalancesWithHoldings, isLiabilityAccount } from "@/lib/queries/balances";
 import { formatKRW, formatTime } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +48,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
   if (!session?.user?.id) return null;
   const { id } = await params;
 
-  const accounts = await computeAccountBalances(session.user.id);
+  const accounts = await computeAccountBalancesWithHoldings(session.user.id);
   const account = accounts.find((a) => a.id === id);
   if (!account) notFound();
 

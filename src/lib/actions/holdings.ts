@@ -85,6 +85,7 @@ export async function upsertHolding(formData: FormData) {
     }
     revalidatePath("/settings/holdings");
     revalidatePath("/accounts");
+    revalidatePath("/");
     return ok({ id });
   } catch (e) {
     return fail(e);
@@ -102,6 +103,7 @@ export async function deleteHolding(id: string) {
       );
     revalidatePath("/settings/holdings");
     revalidatePath("/accounts");
+    revalidatePath("/");
     return ok({ id });
   } catch (e) {
     return fail(e);

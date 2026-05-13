@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { isLiabilityAccount } from "./balances";
 
@@ -12,29 +12,66 @@ export interface NetWorthPoint {
 }
 
 function endOfMonth(year: number, monthIndex: number): Date {
-  // monthIndex 는 0-based. 다음 달 0일 = 이 달 마지막 날.
   return new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
 }
 
+const HOLDINGS_ACCOUNT_TYPES = new Set<typeof schema.accountTypeEnum[number]>([
+  "stock",
+  "crypto",
+]);
+
 /**
  * 월말 시점별 순자산 시계열 계산.
- * 거래를 한 번 가져와 시간순으로 정렬 후, 각 월말 컷오프까지 누적해서 잔액 산정.
- *
- * 거래 수가 N, 컷오프 수가 M 이면 시간 복잡도 O(N + M·N). 1인 사용자 N < 10k 라 충분히 빠름.
- * 추후 N 이 커지면 컷오프 순회를 한 번에 fold(거래 정렬 + 컷오프 정렬 + 두 포인터) 로 바꿀 수 있음.
+ * 거래는 정밀(이력 기반), 보유 종목은 "현재 보유량 × 해당 월말 직전 종가" 근사.
+ * holdings 테이블에 시점별 보유량 이력이 없어 정확한 과거 계산은 불가.
  */
 export async function computeNetWorthSeries(
   userId: string,
   months = 12
 ): Promise<NetWorthPoint[]> {
-  const [accounts, txs] = await Promise.all([
+  const [accounts, txs, holdings] = await Promise.all([
     db.select().from(schema.accounts).where(eq(schema.accounts.userId, userId)),
     db
       .select()
       .from(schema.transactions)
       .where(eq(schema.transactions.userId, userId))
       .orderBy(asc(schema.transactions.occurredAt)),
+    db.select().from(schema.holdings).where(eq(schema.holdings.userId, userId)),
   ]);
+
+  const tickers = [
+    ...new Set(holdings.filter((h) => h.manualValue == null).map((h) => h.ticker)),
+  ];
+  const priceRows = tickers.length
+    ? await db
+        .select()
+        .from(schema.prices)
+        .where(inArray(schema.prices.ticker, tickers))
+    : [];
+
+  // Group prices by ticker, sorted ascending by date — to scan "latest <= cutoff" linearly.
+  const pricesByTicker = new Map<string, { date: string; close: number }[]>();
+  for (const r of priceRows) {
+    const list = pricesByTicker.get(r.ticker) ?? [];
+    list.push({ date: r.date, close: r.close });
+    pricesByTicker.set(r.ticker, list);
+  }
+  for (const list of pricesByTicker.values()) {
+    list.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  function priceAt(ticker: string, cutoffDate: string): number | null {
+    const list = pricesByTicker.get(ticker);
+    if (!list || list.length === 0) return null;
+    let result: number | null = null;
+    for (const p of list) {
+      if (p.date <= cutoffDate) result = p.close;
+      else break;
+    }
+    return result;
+  }
+
+  const accountById = new Map(accounts.map((a) => [a.id, a]));
 
   const now = new Date();
   const cutoffs: Date[] = [];
@@ -70,6 +107,21 @@ export async function computeNetWorthSeries(
           break;
         }
       }
+    }
+
+    // Holdings valuation at this cutoff — current quantity × month-end price approximation.
+    const cutoffDateStr = `${cutoff.getFullYear()}-${String(
+      cutoff.getMonth() + 1
+    ).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
+    for (const h of holdings) {
+      const acct = accountById.get(h.accountId);
+      if (!acct || !HOLDINGS_ACCOUNT_TYPES.has(acct.type)) continue;
+      if (h.manualValue != null) {
+        add(h.accountId, h.manualValue);
+        continue;
+      }
+      const close = priceAt(h.ticker, cutoffDateStr);
+      if (close != null) add(h.accountId, h.quantity * close);
     }
 
     let assets = 0;

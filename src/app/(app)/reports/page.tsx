@@ -162,7 +162,7 @@ export default async function ReportsPage({ searchParams }: PageProps) {
         </div>
 
         <Card>
-          <div className="flex items-baseline justify-between pb-3">
+          <div className="flex items-baseline justify-between pb-1">
             <h2 className="text-heading-m">순자산 추이 · 12개월</h2>
             {netWorthSeries.length > 0 ? (
               <span className="tabular text-body-s text-muted-foreground">
@@ -170,6 +170,9 @@ export default async function ReportsPage({ searchParams }: PageProps) {
               </span>
             ) : null}
           </div>
+          <p className="pb-3 text-caption text-muted-foreground">
+            보유 종목은 현재 보유량 × 해당 월말 종가로 추정한 값이에요.
+          </p>
           <NetWorthLine data={netWorthSeries} />
           <div className="mt-2 flex items-center gap-4 text-caption text-muted-foreground">
             <span className="inline-flex items-center gap-1.5">

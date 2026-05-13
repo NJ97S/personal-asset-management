@@ -3,6 +3,7 @@ import Credentials from "next-auth/providers/credentials";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { cache } from "react";
 import { db, schema } from "@/db";
 import { verifyPassword } from "./password";
 import authConfig from "./config";
@@ -64,3 +65,5 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
 });
+
+export const getSession = cache(() => auth());

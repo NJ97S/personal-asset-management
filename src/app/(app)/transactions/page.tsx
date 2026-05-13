@@ -5,7 +5,7 @@ import { DateGroupHeader } from "@/components/domain/date-group-header";
 import { EmptyState } from "@/components/domain/empty-state";
 import { NewTransactionButton } from "@/components/forms/new-transaction-button";
 import { TransactionHotkeyListener } from "@/components/forms/transaction-hotkey-listener";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { desc, eq } from "drizzle-orm";
 import { formatTime } from "@/lib/utils";
@@ -18,7 +18,7 @@ function dayKey(d: Date) {
 }
 
 export default async function TransactionsPage() {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
   const userId = session.user.id;
 

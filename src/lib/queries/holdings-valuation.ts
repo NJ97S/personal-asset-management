@@ -1,4 +1,4 @@
-import { eq, desc } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db";
 
 export type HoldingWithValuation = typeof schema.holdings.$inferSelect & {
@@ -23,29 +23,26 @@ export async function getHoldingsWithValuation(
 
   const tickers = [...new Set(holdings.map((h) => h.ticker))];
 
-  // Fetch latest price for each ticker
+  // Fetch all prices for these tickers in a single round-trip; pick latest per ticker in memory.
+  const priceRows = await db
+    .select()
+    .from(schema.prices)
+    .where(inArray(schema.prices.ticker, tickers));
+
   const latestPrices = new Map<
     string,
     { close: number; date: string; currency: string }
   >();
-
-  await Promise.all(
-    tickers.map(async (ticker) => {
-      const rows = await db
-        .select()
-        .from(schema.prices)
-        .where(eq(schema.prices.ticker, ticker))
-        .orderBy(desc(schema.prices.date))
-        .limit(1);
-      if (rows.length > 0) {
-        latestPrices.set(ticker, {
-          close: rows[0].close,
-          date: rows[0].date,
-          currency: rows[0].currency,
-        });
-      }
-    })
-  );
+  for (const row of priceRows) {
+    const existing = latestPrices.get(row.ticker);
+    if (!existing || row.date > existing.date) {
+      latestPrices.set(row.ticker, {
+        close: row.close,
+        date: row.date,
+        currency: row.currency,
+      });
+    }
+  }
 
   return holdings.map((h) => {
     const priceData = latestPrices.get(h.ticker);

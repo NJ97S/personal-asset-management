@@ -1,13 +1,13 @@
 import { TopNav } from "@/components/nav/top-nav";
 import { AccountManager } from "@/components/forms/account-manager";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
 export default async function AccountsSettingsPage() {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
   const rows = await db
     .select()

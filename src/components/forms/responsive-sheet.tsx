@@ -41,7 +41,7 @@ export function ResponsiveSheet({
   if (isDesktop) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent>
+        <DialogContent className="max-h-[85dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             {description ? (
@@ -55,14 +55,16 @@ export function ResponsiveSheet({
   }
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
-      <DrawerContent>
+      <DrawerContent className="max-h-[92dvh]">
         <DrawerHeader>
           <DrawerTitle>{title}</DrawerTitle>
           {description ? (
             <DrawerDescription>{description}</DrawerDescription>
           ) : null}
         </DrawerHeader>
-        <div className="px-4 pb-6 safe-bottom">{children}</div>
+        <div className="overflow-y-auto overscroll-contain px-4 pb-6 safe-bottom">
+          {children}
+        </div>
       </DrawerContent>
     </Drawer>
   );

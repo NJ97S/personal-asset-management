@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/domain/empty-state";
 import { CategoryIcon } from "@/components/domain/category-icon";
 import { MetricCard } from "@/components/domain/metric-card";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { computeNetWorth, isLiabilityAccount } from "@/lib/queries/balances";
 import { formatKRW } from "@/lib/utils";
 
@@ -35,7 +35,7 @@ const accountLabelMap: Record<string, string> = {
 };
 
 export default async function AccountsPage() {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
 
   const { assets, liabilities, netWorth, accounts } = await computeNetWorth(

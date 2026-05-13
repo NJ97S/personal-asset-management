@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { TopNav } from "@/components/nav/top-nav";
 import { Card } from "@/components/ui/card";
-import { auth, signOut } from "@/lib/auth";
+import { getSession, signOut } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +17,7 @@ const sections = [
 ];
 
 export default async function SettingsPage() {
-  const session = await auth();
+  const session = await getSession();
   return (
     <>
       <TopNav title="설정" />

@@ -8,7 +8,7 @@ import {
   DailyBar,
   NetWorthLine,
 } from "@/components/charts/lazy";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { formatKRW } from "@/lib/utils";
@@ -31,7 +31,7 @@ interface PageProps {
 }
 
 export default async function ReportsPage({ searchParams }: PageProps) {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
   const userId = session.user.id;
   const { month } = await searchParams;

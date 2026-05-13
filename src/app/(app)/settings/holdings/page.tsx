@@ -1,6 +1,6 @@
 import { TopNav } from "@/components/nav/top-nav";
 import { HoldingManager } from "@/components/forms/holding-manager";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, eq } from "drizzle-orm";
 import { getHoldingsWithValuation } from "@/lib/queries/holdings-valuation";
@@ -8,7 +8,7 @@ import { getHoldingsWithValuation } from "@/lib/queries/holdings-valuation";
 export const dynamic = "force-dynamic";
 
 export default async function HoldingsSettingsPage() {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
 
   const [holdings, accounts] = await Promise.all([

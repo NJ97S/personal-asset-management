@@ -44,9 +44,13 @@ export function TopNav({ title, back, right, className }: TopNavProps) {
         )
       ) : null}
       {title ? (
-        <h1 className="text-heading-m text-foreground">{title}</h1>
-      ) : null}
-      <div className="ml-auto flex items-center gap-1">
+        <h1 className="min-w-0 flex-1 truncate text-heading-m text-foreground">
+          {title}
+        </h1>
+      ) : (
+        <div className="min-w-0 flex-1" />
+      )}
+      <div className="flex shrink-0 items-center gap-1">
         {right}
         <ThemeToggle />
       </div>

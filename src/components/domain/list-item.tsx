@@ -46,7 +46,7 @@ export function ListItem({
         ) : null}
       </div>
       {(amount !== undefined || meta) && (
-        <div className="flex flex-col items-end gap-0.5">
+        <div className="flex shrink-0 flex-col items-end gap-0.5">
           {amount !== undefined ? (
             <AmountDisplay amount={amount} variant={amountVariant} size="m" />
           ) : null}

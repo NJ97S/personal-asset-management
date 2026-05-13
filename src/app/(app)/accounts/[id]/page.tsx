@@ -5,7 +5,7 @@ import { ListItem } from "@/components/domain/list-item";
 import { CategoryIcon } from "@/components/domain/category-icon";
 import { DateGroupHeader } from "@/components/domain/date-group-header";
 import { EmptyState } from "@/components/domain/empty-state";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, desc, eq, or } from "drizzle-orm";
 import { computeAccountBalances, isLiabilityAccount } from "@/lib/queries/balances";
@@ -44,7 +44,7 @@ interface PageProps {
 }
 
 export default async function AccountDetailPage({ params }: PageProps) {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
   const { id } = await params;
 

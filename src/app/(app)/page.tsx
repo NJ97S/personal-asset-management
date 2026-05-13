@@ -6,7 +6,7 @@ import { MetricCard } from "@/components/domain/metric-card";
 import { ListItem } from "@/components/domain/list-item";
 import { EmptyState } from "@/components/domain/empty-state";
 import { NewTransactionButton } from "@/components/forms/new-transaction-button";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { formatKRW } from "@/lib/utils";
@@ -77,7 +77,7 @@ async function loadDashboard(userId: string) {
 }
 
 export default async function HomePage() {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
 
   const [data, defaults, netWorth] = await Promise.all([

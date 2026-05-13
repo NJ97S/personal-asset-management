@@ -1,13 +1,13 @@
 import { TopNav } from "@/components/nav/top-nav";
 import { CategoryManager } from "@/components/forms/category-manager";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
 export default async function CategoriesSettingsPage() {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) return null;
   const rows = await db
     .select()

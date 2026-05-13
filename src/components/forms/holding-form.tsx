@@ -161,7 +161,8 @@ export function HoldingForm({ accounts, initial, onSuccess }: HoldingFormProps) 
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
               className="tabular"
-              placeholder="0"
+              placeholder="예: 10"
+              required
             />
           </div>
           <div className="space-y-1.5">
@@ -172,7 +173,8 @@ export function HoldingForm({ accounts, initial, onSuccess }: HoldingFormProps) 
               value={avgBuyPrice}
               onChange={(e) => setAvgBuyPrice(e.target.value)}
               className="tabular"
-              placeholder="0"
+              placeholder="예: 24500"
+              required
             />
           </div>
         </div>
@@ -197,7 +199,17 @@ export function HoldingForm({ accounts, initial, onSuccess }: HoldingFormProps) 
 
       <Button
         type="submit"
-        disabled={pending || !ticker || !accountId}
+        disabled={
+          pending ||
+          !ticker ||
+          !accountId ||
+          (isManual
+            ? !manualValue || Number(manualValue) <= 0
+            : !quantity ||
+              Number(quantity) <= 0 ||
+              !avgBuyPrice ||
+              Number(avgBuyPrice) <= 0)
+        }
         className="w-full"
       >
         {pending ? "저장하는 중..." : initial?.id ? "수정" : "추가"}

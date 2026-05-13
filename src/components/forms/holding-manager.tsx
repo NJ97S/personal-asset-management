@@ -149,6 +149,12 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
         <Card className="overflow-hidden p-0">
           <ul className="divide-y divide-border">
             {holdings.map((h) => {
+              const quantityLabel =
+                h.assetClass !== "other"
+                  ? `수량 ${new Intl.NumberFormat("ko-KR", {
+                      maximumFractionDigits: 8,
+                    }).format(h.quantity)}`
+                  : null;
               const avgPriceLabel =
                 h.assetClass !== "other"
                   ? `평균 ${formatCurrency(h.avgBuyPrice, h.currency)}`
@@ -159,6 +165,8 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
                   : h.manualValue != null
                   ? null
                   : "현재가 —";
+              const needsQuantity =
+                h.assetClass !== "other" && h.quantity <= 0;
               const updatedLabel =
                 h.latestPriceDate != null
                   ? formatDistanceToNow(new Date(h.latestPriceDate), {
@@ -180,9 +188,15 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
                     </p>
                     <p className="text-body-s text-muted-foreground">
                       {assetLabelMap[h.assetClass]} · {accountName(h.accountId)}
+                      {quantityLabel ? ` · ${quantityLabel}` : ""}
                       {avgPriceLabel ? ` · ${avgPriceLabel}` : ""}
                       {currentPriceLabel ? ` · ${currentPriceLabel}` : ""}
                     </p>
+                    {needsQuantity && (
+                      <p className="text-caption text-danger">
+                        수량이 0이에요. 편집해서 보유 수량을 입력해 주세요.
+                      </p>
+                    )}
                     {updatedLabel && (
                       <p className="text-body-xs text-muted-foreground/60">
                         {updatedLabel} 갱신

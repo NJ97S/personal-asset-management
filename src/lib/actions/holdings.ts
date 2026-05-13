@@ -17,20 +17,29 @@ const assetClasses = [
   "other",
 ] as const;
 
-const upsertSchema = z.object({
-  id: z.string().optional(),
-  accountId: z.string().min(1, "계정을 선택해 주세요."),
-  ticker: z.string().min(1, "종목코드를 입력해 주세요.").max(40),
-  name: z.string().max(80).optional().nullable(),
-  exchange: z.string().max(20).optional().nullable(),
-  assetClass: z.enum(assetClasses),
-  quantity: z.coerce.number().min(0, "수량은 0 이상이어야 해요."),
-  avgBuyPrice: z.coerce.number().min(0, "평균가는 0 이상이어야 해요."),
-  manualValue: z
-    .union([z.coerce.number(), z.literal(""), z.undefined()])
-    .optional()
-    .transform((v) => (v === "" || v == null ? null : Number(v))),
-});
+const upsertSchema = z
+  .object({
+    id: z.string().optional(),
+    accountId: z.string().min(1, "계정을 선택해 주세요."),
+    ticker: z.string().min(1, "종목코드를 입력해 주세요.").max(40),
+    name: z.string().max(80).optional().nullable(),
+    exchange: z.string().max(20).optional().nullable(),
+    assetClass: z.enum(assetClasses),
+    quantity: z.coerce.number().min(0, "수량은 0 이상이어야 해요."),
+    avgBuyPrice: z.coerce.number().min(0, "평균가는 0 이상이어야 해요."),
+    manualValue: z
+      .union([z.coerce.number(), z.literal(""), z.undefined()])
+      .optional()
+      .transform((v) => (v === "" || v == null ? null : Number(v))),
+  })
+  .refine((d) => d.manualValue != null || d.quantity > 0, {
+    message: "수량을 0보다 크게 입력해 주세요.",
+    path: ["quantity"],
+  })
+  .refine((d) => d.manualValue != null || d.avgBuyPrice > 0, {
+    message: "평균 매입가를 0보다 크게 입력해 주세요.",
+    path: ["avgBuyPrice"],
+  });
 
 function readFormData(formData: FormData) {
   const out: Record<string, unknown> = {};

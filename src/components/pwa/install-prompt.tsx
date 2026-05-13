@@ -18,6 +18,13 @@ export function InstallPrompt() {
     const dismissed = localStorage.getItem(DISMISS_KEY);
     if (dismissed && Date.now() - Number(dismissed) < TWO_WEEKS) return;
 
+    // Skip if already running as an installed PWA (standalone display).
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      // iOS Safari
+      (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+    if (isStandalone) return;
+
     const handler = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e as BeforeInstallPromptEvent);
@@ -40,7 +47,7 @@ export function InstallPrompt() {
   };
 
   return (
-    <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-background px-4 py-3 shadow-lg ring-1 ring-border">
+    <div className="fixed bottom-[calc(env(safe-area-inset-bottom)+5rem)] left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-background px-4 py-3 shadow-lg ring-1 ring-border md:hidden">
       <span className="text-sm text-foreground">홈 화면에 추가하시겠어요?</span>
       <Button size="sm" onClick={handleInstall}>
         홈 화면에 추가

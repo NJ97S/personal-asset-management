@@ -22,6 +22,7 @@ const config = {
     extend: {
       fontFamily: {
         sans: [
+          "var(--font-pretendard)",
           "Pretendard Variable",
           "Pretendard",
           "system-ui",

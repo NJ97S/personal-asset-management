@@ -14,7 +14,9 @@ export default async function AppShellLayout({
   return (
     <div className="flex min-h-dvh bg-surface">
       <Sidebar />
-      <main className="min-w-0 flex-1 pb-20 md:pb-0">{children}</main>
+      <main className="min-w-0 flex-1 pb-[calc(env(safe-area-inset-bottom)+4.5rem)] md:pb-0">
+        {children}
+      </main>
       <BottomNav />
     </div>
   );

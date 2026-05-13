@@ -2,9 +2,12 @@ import { TopNav } from "@/components/nav/top-nav";
 import { Card } from "@/components/ui/card";
 import { MetricCard } from "@/components/domain/metric-card";
 import { EmptyState } from "@/components/domain/empty-state";
-import { CategoryDonut, CategoryLegend } from "@/components/charts/category-donut";
-import { DailyBar } from "@/components/charts/daily-bar";
-import { NetWorthLine } from "@/components/charts/networth-line";
+import {
+  CategoryDonut,
+  CategoryLegend,
+  DailyBar,
+  NetWorthLine,
+} from "@/components/charts/lazy";
 import { auth } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { and, desc, eq, gte, lte } from "drizzle-orm";

@@ -14,7 +14,17 @@ import { loadFormDefaults } from "@/lib/queries/dashboard";
 export const dynamic = "force-dynamic";
 
 function dayKey(d: Date) {
-  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
+  // Use explicit KST (Asia/Seoul) so grouping is consistent between
+  // UTC Vercel servers and the browser. Without this, transactions
+  // near midnight KST end up in the wrong date group on the server,
+  // causing a hydration mismatch that breaks the list layout.
+  const kst = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+  return kst; // "YYYY-MM-DD"
 }
 
 export default async function TransactionsPage() {
@@ -94,7 +104,7 @@ export default async function TransactionsPage() {
             />
           </Card>
         ) : (
-          <Card className="overflow-hidden p-0">
+          <Card className="p-0">
             {Array.from(groups.values()).map((g, i) => (
               <div key={i}>
                 <DateGroupHeader

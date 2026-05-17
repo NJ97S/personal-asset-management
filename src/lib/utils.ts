@@ -25,6 +25,7 @@ export function formatDateKo(date: Date | string) {
     year: "numeric",
     month: "long",
     day: "numeric",
+    timeZone: "Asia/Seoul",
   }).format(d);
 }
 
@@ -34,6 +35,7 @@ export function formatMonthDay(date: Date | string) {
     month: "long",
     day: "numeric",
     weekday: "short",
+    timeZone: "Asia/Seoul",
   }).format(d);
 }
 
@@ -43,5 +45,6 @@ export function formatTime(date: Date | string) {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: "Asia/Seoul",
   }).format(d);
 }

@@ -19,7 +19,7 @@ export function DateGroupHeader({
   return (
     <div
       className={cn(
-        "flex items-center justify-between bg-background/95 px-4 py-2 backdrop-blur",
+        "flex items-center justify-between bg-background px-4 py-2",
         sticky && "sticky top-14 z-10",
         className
       )}

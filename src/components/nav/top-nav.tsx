@@ -19,7 +19,7 @@ export function TopNav({ title, back, right, className }: TopNavProps) {
   return (
     <header
       className={cn(
-        "sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur safe-top",
+        "sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background px-4 safe-top",
         className
       )}
     >

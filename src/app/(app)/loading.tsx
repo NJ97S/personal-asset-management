@@ -4,7 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 export default function Loading() {
   return (
     <>
-      <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur safe-top">
+      <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background px-4 safe-top">
         <Skeleton className="h-5 w-24" />
         <div className="ml-auto flex items-center gap-1">
           <Skeleton className="h-9 w-16" />

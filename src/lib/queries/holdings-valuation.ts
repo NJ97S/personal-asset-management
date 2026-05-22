@@ -47,12 +47,16 @@ export async function getHoldingsWithValuation(
   return holdings.map((h) => {
     const priceData = latestPrices.get(h.ticker);
 
-    if (h.manualValue != null) {
+    // 과거 버그로 manualValue 가 0 으로 저장된 행을 방어:
+    // 양수일 때만 수동 평가액으로 인정하고, 그 외엔 시세/폴백 경로로 흐른다.
+    const hasManualValue = h.manualValue != null && h.manualValue > 0;
+
+    if (hasManualValue) {
       return {
         ...h,
         latestClose: null,
         latestPriceDate: null,
-        marketValue: h.manualValue,
+        marketValue: h.manualValue as number,
         pnl: null,
         pnlPercent: null,
         currency: "KRW",

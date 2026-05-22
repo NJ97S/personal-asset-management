@@ -15,7 +15,11 @@ export async function GET(req: Request) {
   }
 
   const holdings = await db.select().from(schema.holdings);
-  const targets = holdings.filter((h) => h.manualValue == null);
+  // manualValue > 0 인 진짜 수동 평가 종목만 시세 갱신 대상에서 제외.
+  // 과거 버그로 manualValue=0 이 저장된 종목도 시세 갱신 대상에 포함.
+  const targets = holdings.filter(
+    (h) => !(h.manualValue != null && h.manualValue > 0)
+  );
 
   let ok = 0;
   let failed = 0;

@@ -27,10 +27,12 @@ const upsertSchema = z
     assetClass: z.enum(assetClasses),
     quantity: z.coerce.number().min(0, "수량은 0 이상이어야 해요."),
     avgBuyPrice: z.coerce.number().min(0, "평균가는 0 이상이어야 해요."),
-    manualValue: z
-      .union([z.coerce.number(), z.literal(""), z.undefined()])
-      .optional()
-      .transform((v) => (v === "" || v == null ? null : Number(v))),
+    // 빈 문자열을 먼저 null 로 정규화한 뒤 숫자 강제 변환.
+    // (union + coerce 조합은 "" 를 0 으로 삼켜버려서 manualValue=0 이 저장되는 버그가 있었음.)
+    manualValue: z.preprocess(
+      (v) => (v === "" || v == null ? null : v),
+      z.coerce.number().positive("평가금액은 0보다 커야 해요.").nullable()
+    ),
   })
   .refine((d) => d.manualValue != null || d.quantity > 0, {
     message: "수량을 0보다 크게 입력해 주세요.",
@@ -62,6 +64,11 @@ export async function upsertHolding(formData: FormData) {
     const data = parsed.data;
     const id = data.id ?? nanoid();
 
+    // 시세가 붙는 종목군은 manualValue 를 절대 갖지 않는다.
+    // 클라이언트가 잘못 보내거나 과거 손상된 행이 재편집될 때 자동 정상화.
+    const manualValue =
+      data.assetClass === "other" ? data.manualValue ?? null : null;
+
     if (data.id) {
       await db
         .update(schema.holdings)
@@ -73,7 +80,7 @@ export async function upsertHolding(formData: FormData) {
           assetClass: data.assetClass,
           quantity: data.quantity,
           avgBuyPrice: data.avgBuyPrice,
-          manualValue: data.manualValue ?? null,
+          manualValue,
         })
         .where(
           and(eq(schema.holdings.id, data.id), eq(schema.holdings.userId, userId))
@@ -89,7 +96,7 @@ export async function upsertHolding(formData: FormData) {
         assetClass: data.assetClass,
         quantity: data.quantity,
         avgBuyPrice: data.avgBuyPrice,
-        manualValue: data.manualValue ?? null,
+        manualValue,
       });
     }
     revalidatePath("/settings/holdings");

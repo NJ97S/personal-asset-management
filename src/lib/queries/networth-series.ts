@@ -39,8 +39,11 @@ export async function computeNetWorthSeries(
     db.select().from(schema.holdings).where(eq(schema.holdings.userId, userId)),
   ]);
 
+  // manualValue > 0 만 진짜 수동 평가, 그 외(특히 과거 버그로 저장된 0)는 시세 경로.
+  const hasManualValue = (h: { manualValue: number | null }) =>
+    h.manualValue != null && h.manualValue > 0;
   const tickers = [
-    ...new Set(holdings.filter((h) => h.manualValue == null).map((h) => h.ticker)),
+    ...new Set(holdings.filter((h) => !hasManualValue(h)).map((h) => h.ticker)),
   ];
   const priceRows = tickers.length
     ? await db
@@ -116,8 +119,8 @@ export async function computeNetWorthSeries(
     for (const h of holdings) {
       const acct = accountById.get(h.accountId);
       if (!acct || !HOLDINGS_ACCOUNT_TYPES.has(acct.type)) continue;
-      if (h.manualValue != null) {
-        add(h.accountId, h.manualValue);
+      if (hasManualValue(h)) {
+        add(h.accountId, h.manualValue as number);
         continue;
       }
       const close = priceAt(h.ticker, cutoffDateStr);

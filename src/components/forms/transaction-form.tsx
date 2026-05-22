@@ -199,7 +199,7 @@ export function TransactionForm({
             먼저 설정에서 {type === "income" ? "수입" : "지출"} 카테고리를 추가해 주세요.
           </p>
         ) : (
-          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 scrollbar-none">
+          <div className="flex flex-wrap gap-2">
             {filteredCategories.map((c) => {
               const active = c.id === categoryId;
               return (
@@ -208,7 +208,7 @@ export function TransactionForm({
                   type="button"
                   onClick={() => setCategoryId(c.id)}
                   className={cn(
-                    "flex min-w-[68px] shrink-0 flex-col items-center gap-1 rounded-md px-2 py-2 transition-colors",
+                    "flex min-w-[68px] flex-col items-center gap-1 rounded-md px-2 py-2 transition-colors",
                     active
                       ? "bg-primary/10 ring-2 ring-primary"
                       : "hover:bg-muted/60"

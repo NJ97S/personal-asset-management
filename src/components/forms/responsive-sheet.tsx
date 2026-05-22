@@ -39,16 +39,21 @@ export function ResponsiveSheet({
   const isDesktop = useMediaQuery("(min-width: 768px)");
 
   if (isDesktop) {
+    // grid gap-4 p-6 default 을 flex 컬럼 + no-gap/no-padding 으로 덮는다.
+    // 헤더(+absolute X) 는 shrink-0, 본문만 flex-1 overflow-y-auto 로 분리해
+    // 본문이 길어져도 헤더/닫기 버튼이 항상 보이고 모달 자체는 잘리지 않게.
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-h-[85dvh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[92dvh] flex-col gap-0 p-0">
+          <DialogHeader className="shrink-0 px-6 pb-3 pt-6 text-left">
             <DialogTitle>{title}</DialogTitle>
             {description ? (
               <DialogDescription>{description}</DialogDescription>
             ) : null}
           </DialogHeader>
-          {children}
+          <div className="flex-1 overflow-y-auto overscroll-contain px-6 pb-6 pt-1">
+            {children}
+          </div>
         </DialogContent>
       </Dialog>
     );
@@ -56,13 +61,13 @@ export function ResponsiveSheet({
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
       <DrawerContent className="max-h-[92dvh]">
-        <DrawerHeader>
+        <DrawerHeader className="shrink-0">
           <DrawerTitle>{title}</DrawerTitle>
           {description ? (
             <DrawerDescription>{description}</DrawerDescription>
           ) : null}
         </DrawerHeader>
-        <div className="overflow-y-auto overscroll-contain px-4 pb-6 safe-bottom">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 safe-bottom">
           {children}
         </div>
       </DrawerContent>

@@ -18,7 +18,10 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CategoryIcon } from "@/components/domain/category-icon";
 import { cn } from "@/lib/utils";
-import { createTransaction } from "@/lib/actions/transactions";
+import {
+  createTransaction,
+  updateTransaction,
+} from "@/lib/actions/transactions";
 
 type TxType = "expense" | "income";
 
@@ -35,11 +38,23 @@ interface AccountOpt {
   type: string;
 }
 
+interface TransactionFormInitial {
+  id: string;
+  type: TxType;
+  amount: number;
+  occurredAt: Date;
+  accountId?: string | null;
+  categoryId?: string | null;
+  payee?: string | null;
+  memo?: string | null;
+}
+
 interface TransactionFormProps {
   categories: CategoryOpt[];
   accounts: AccountOpt[];
   defaultCategoryIdByKind?: Partial<Record<TxType, string>>;
   defaultAccountId?: string;
+  initial?: TransactionFormInitial;
   onSuccess?: () => void;
 }
 
@@ -50,24 +65,36 @@ function todayLocal() {
   return local.toISOString().slice(0, 16);
 }
 
+function dateToLocalInput(d: Date) {
+  const offset = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - offset * 60 * 1000);
+  return local.toISOString().slice(0, 16);
+}
+
 export function TransactionForm({
   categories,
   accounts,
   defaultCategoryIdByKind,
   defaultAccountId,
+  initial,
   onSuccess,
 }: TransactionFormProps) {
-  const [type, setType] = React.useState<TxType>("expense");
-  const [amount, setAmount] = React.useState("");
+  const isEdit = !!initial?.id;
+  const [type, setType] = React.useState<TxType>(initial?.type ?? "expense");
+  const [amount, setAmount] = React.useState(
+    initial ? String(initial.amount) : ""
+  );
   const [categoryId, setCategoryId] = React.useState<string | undefined>(
-    defaultCategoryIdByKind?.expense
+    initial?.categoryId ?? defaultCategoryIdByKind?.[initial?.type ?? "expense"]
   );
   const [accountId, setAccountId] = React.useState<string | undefined>(
-    defaultAccountId ?? accounts[0]?.id
+    initial?.accountId ?? defaultAccountId ?? accounts[0]?.id
   );
-  const [occurredAt, setOccurredAt] = React.useState(todayLocal());
-  const [payee, setPayee] = React.useState("");
-  const [memo, setMemo] = React.useState("");
+  const [occurredAt, setOccurredAt] = React.useState(
+    initial ? dateToLocalInput(initial.occurredAt) : todayLocal()
+  );
+  const [payee, setPayee] = React.useState(initial?.payee ?? "");
+  const [memo, setMemo] = React.useState(initial?.memo ?? "");
   const [pending, startTransition] = useTransition();
 
   const filteredCategories = React.useMemo(
@@ -89,19 +116,28 @@ export function TransactionForm({
     if (categoryId) formData.set("categoryId", categoryId);
     if (accountId) formData.set("accountId", accountId);
     formData.set("occurredAt", new Date(occurredAt).toISOString());
+    if (isEdit && initial) formData.set("id", initial.id);
 
     startTransition(async () => {
-      const result = await createTransaction(formData);
+      const result = isEdit
+        ? await updateTransaction(formData)
+        : await createTransaction(formData);
       if (result.ok) {
         toast.success(
-          type === "income" ? "수입을 기록했어요" : "지출을 기록했어요"
+          isEdit
+            ? "수정했어요"
+            : type === "income"
+              ? "수입을 기록했어요"
+              : "지출을 기록했어요"
         );
         if (typeof navigator !== "undefined" && "vibrate" in navigator) {
           navigator.vibrate?.(10);
         }
-        setAmount("");
-        setMemo("");
-        setPayee("");
+        if (!isEdit) {
+          setAmount("");
+          setMemo("");
+          setPayee("");
+        }
         onSuccess?.();
       } else {
         toast.error(result.error);
@@ -257,7 +293,13 @@ export function TransactionForm({
         disabled={pending || !amount || !categoryId || !accountId}
         className="w-full"
       >
-        {pending ? "기록하는 중..." : "기록하기"}
+        {pending
+          ? isEdit
+            ? "수정하는 중..."
+            : "기록하는 중..."
+          : isEdit
+            ? "수정"
+            : "기록하기"}
       </Button>
     </form>
   );

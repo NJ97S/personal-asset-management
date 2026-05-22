@@ -16,7 +16,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn, formatKRW } from "@/lib/utils";
-import { createTransaction } from "@/lib/actions/transactions";
+import {
+  createTransaction,
+  updateTransaction,
+} from "@/lib/actions/transactions";
 
 interface AccountOpt {
   id: string;
@@ -24,13 +27,26 @@ interface AccountOpt {
   type: string;
 }
 
+type TradeKind = "buy" | "sell";
+
+interface TradeFormInitial {
+  id: string;
+  tradeKind: TradeKind;
+  accountId?: string | null;
+  ticker: string;
+  quantity: number;
+  pricePerUnit: number;
+  fee: number;
+  occurredAt: Date;
+  memo?: string | null;
+}
+
 interface TradeFormProps {
   accounts: AccountOpt[];
   defaultAccountId?: string;
+  initial?: TradeFormInitial;
   onSuccess?: () => void;
 }
-
-type TradeKind = "buy" | "sell";
 
 function todayLocal() {
   const now = new Date();
@@ -39,23 +55,39 @@ function todayLocal() {
   return local.toISOString().slice(0, 16);
 }
 
+function dateToLocalInput(d: Date) {
+  const offset = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - offset * 60 * 1000);
+  return local.toISOString().slice(0, 16);
+}
+
 const num = (v: string) => Number(v.replace(/,/g, "")) || 0;
 
 export function TradeForm({
   accounts,
   defaultAccountId,
+  initial,
   onSuccess,
 }: TradeFormProps) {
-  const [tradeKind, setTradeKind] = React.useState<TradeKind>("buy");
-  const [accountId, setAccountId] = React.useState<string | undefined>(
-    defaultAccountId ?? accounts[0]?.id
+  const isEdit = !!initial?.id;
+  const [tradeKind, setTradeKind] = React.useState<TradeKind>(
+    initial?.tradeKind ?? "buy"
   );
-  const [ticker, setTicker] = React.useState("");
-  const [quantity, setQuantity] = React.useState("");
-  const [pricePerUnit, setPricePerUnit] = React.useState("");
-  const [fee, setFee] = React.useState("");
-  const [occurredAt, setOccurredAt] = React.useState(todayLocal());
-  const [memo, setMemo] = React.useState("");
+  const [accountId, setAccountId] = React.useState<string | undefined>(
+    initial?.accountId ?? defaultAccountId ?? accounts[0]?.id
+  );
+  const [ticker, setTicker] = React.useState(initial?.ticker ?? "");
+  const [quantity, setQuantity] = React.useState(
+    initial ? String(initial.quantity) : ""
+  );
+  const [pricePerUnit, setPricePerUnit] = React.useState(
+    initial ? String(initial.pricePerUnit) : ""
+  );
+  const [fee, setFee] = React.useState(initial ? String(initial.fee) : "");
+  const [occurredAt, setOccurredAt] = React.useState(
+    initial ? dateToLocalInput(initial.occurredAt) : todayLocal()
+  );
+  const [memo, setMemo] = React.useState(initial?.memo ?? "");
   const [pending, startTransition] = useTransition();
 
   const totalAmount = num(quantity) * num(pricePerUnit) + num(fee);
@@ -70,18 +102,29 @@ export function TradeForm({
     formData.set("fee", fee || "0");
     formData.set("amount", String(totalAmount));
     formData.set("occurredAt", new Date(occurredAt).toISOString());
+    if (isEdit && initial) formData.set("id", initial.id);
 
     startTransition(async () => {
-      const result = await createTransaction(formData);
+      const result = isEdit
+        ? await updateTransaction(formData)
+        : await createTransaction(formData);
       if (result.ok) {
-        toast.success(tradeKind === "buy" ? "매수를 기록했어요" : "매도를 기록했어요");
+        toast.success(
+          isEdit
+            ? "수정했어요"
+            : tradeKind === "buy"
+              ? "매수를 기록했어요"
+              : "매도를 기록했어요"
+        );
         if (typeof navigator !== "undefined" && "vibrate" in navigator) {
           navigator.vibrate?.(10);
         }
-        setQuantity("");
-        setPricePerUnit("");
-        setFee("");
-        setMemo("");
+        if (!isEdit) {
+          setQuantity("");
+          setPricePerUnit("");
+          setFee("");
+          setMemo("");
+        }
         onSuccess?.();
       } else {
         toast.error(result.error);
@@ -241,10 +284,14 @@ export function TradeForm({
         className="w-full"
       >
         {pending
-          ? "기록하는 중..."
-          : tradeKind === "buy"
-            ? "매수 기록"
-            : "매도 기록"}
+          ? isEdit
+            ? "수정하는 중..."
+            : "기록하는 중..."
+          : isEdit
+            ? "수정"
+            : tradeKind === "buy"
+              ? "매수 기록"
+              : "매도 기록"}
       </Button>
     </form>
   );

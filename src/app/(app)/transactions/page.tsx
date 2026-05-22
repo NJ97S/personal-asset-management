@@ -1,14 +1,16 @@
 import { TopNav } from "@/components/nav/top-nav";
 import { Card } from "@/components/ui/card";
-import { ListItem } from "@/components/domain/list-item";
-import { DateGroupHeader } from "@/components/domain/date-group-header";
 import { EmptyState } from "@/components/domain/empty-state";
 import { NewTransactionButton } from "@/components/forms/new-transaction-button";
 import { TransactionHotkeyListener } from "@/components/forms/transaction-hotkey-listener";
+import {
+  TransactionList,
+  type TransactionListGroup,
+  type TransactionListRow,
+} from "@/components/forms/transaction-list";
 import { getSession } from "@/lib/auth";
 import { db, schema } from "@/db";
 import { desc, eq } from "drizzle-orm";
-import { formatTime } from "@/lib/utils";
 import { loadFormDefaults } from "@/lib/queries/dashboard";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +43,15 @@ export default async function TransactionsPage() {
         amount: schema.transactions.amount,
         payee: schema.transactions.payee,
         memo: schema.transactions.memo,
+        accountId: schema.transactions.accountId,
+        categoryId: schema.transactions.categoryId,
+        fromAccountId: schema.transactions.fromAccountId,
+        toAccountId: schema.transactions.toAccountId,
+        tradeKind: schema.transactions.tradeKind,
+        ticker: schema.transactions.ticker,
+        quantity: schema.transactions.quantity,
+        pricePerUnit: schema.transactions.pricePerUnit,
+        fee: schema.transactions.fee,
         categoryName: schema.categories.name,
         categoryIcon: schema.categories.icon,
         categoryColor: schema.categories.color,
@@ -56,17 +67,40 @@ export default async function TransactionsPage() {
     loadFormDefaults(userId),
   ]);
 
-  const groups = new Map<
-    string,
-    { date: Date; rows: typeof txs; income: number; expense: number }
-  >();
+  const groups = new Map<string, TransactionListGroup>();
   for (const t of txs) {
     const key = dayKey(t.occurredAt);
     if (!groups.has(key)) {
-      groups.set(key, { date: t.occurredAt, rows: [], income: 0, expense: 0 });
+      groups.set(key, {
+        key,
+        date: t.occurredAt,
+        rows: [],
+        income: 0,
+        expense: 0,
+      });
     }
     const g = groups.get(key)!;
-    g.rows.push(t);
+    const row: TransactionListRow = {
+      id: t.id,
+      type: t.type,
+      occurredAt: t.occurredAt,
+      amount: t.amount,
+      payee: t.payee,
+      memo: t.memo,
+      accountId: t.accountId,
+      categoryId: t.categoryId,
+      fromAccountId: t.fromAccountId,
+      toAccountId: t.toAccountId,
+      tradeKind: t.tradeKind,
+      ticker: t.ticker,
+      quantity: t.quantity,
+      pricePerUnit: t.pricePerUnit,
+      fee: t.fee,
+      categoryName: t.categoryName,
+      categoryIcon: t.categoryIcon,
+      categoryColor: t.categoryColor,
+    };
+    g.rows.push(row);
     if (t.type === "income") g.income += t.amount;
     if (t.type === "expense") g.expense += t.amount;
   }
@@ -104,42 +138,11 @@ export default async function TransactionsPage() {
             />
           </Card>
         ) : (
-          <Card className="p-0">
-            {Array.from(groups.values()).map((g, i) => (
-              <div key={i}>
-                <DateGroupHeader
-                  date={g.date}
-                  income={g.income || undefined}
-                  expense={g.expense || undefined}
-                />
-                <div className="divide-y divide-border">
-                  {g.rows.map((t) => (
-                    <ListItem
-                      key={t.id}
-                      icon={{ name: t.categoryIcon, color: t.categoryColor }}
-                      title={t.payee ?? t.categoryName ?? t.memo ?? "거래"}
-                      subtitle={
-                        t.categoryName
-                          ? t.memo
-                            ? `${t.categoryName} · ${t.memo}`
-                            : t.categoryName
-                          : t.memo ?? undefined
-                      }
-                      amount={t.amount}
-                      amountVariant={
-                        t.type === "income"
-                          ? "income"
-                          : t.type === "expense"
-                            ? "expense"
-                            : "neutral"
-                      }
-                      meta={formatTime(t.occurredAt)}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </Card>
+          <TransactionList
+            groups={Array.from(groups.values())}
+            accounts={defaults.accounts}
+            categories={defaults.categories}
+          />
         )}
       </div>
     </>

@@ -125,46 +125,126 @@ export async function createTransaction(formData: FormData) {
   }
 }
 
-const updateTxSchema = z.object({
+const updateIncomeExpenseSchema = z.object({
   id: z.string().min(1),
-  occurredAt: z
-    .union([z.string(), z.date()])
-    .optional()
-    .transform((v) =>
-      v == null ? undefined : typeof v === "string" ? new Date(v) : v
-    ),
-  amount: z.coerce.number().positive().optional(),
-  payee: z.string().max(120).optional().nullable(),
-  memo: z.string().max(500).optional().nullable(),
-  categoryId: z.string().optional().nullable(),
-  accountId: z.string().optional().nullable(),
+  type: z.enum(["income", "expense"]),
+  accountId: z.string().min(1, "계정을 선택해 주세요."),
+  categoryId: z.string().min(1, "카테고리를 선택해 주세요."),
+  ...baseFields,
 });
+
+const updateTransferSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("transfer"),
+  fromAccountId: z.string().min(1, "보내는 계정을 선택해 주세요."),
+  toAccountId: z.string().min(1, "받는 계정을 선택해 주세요."),
+  ...baseFields,
+});
+
+const updateTradeSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("trade"),
+  tradeKind: z.enum(["buy", "sell"]),
+  accountId: z.string().min(1),
+  ticker: z.string().min(1),
+  quantity: z.coerce.number().positive(),
+  pricePerUnit: z.coerce.number().positive(),
+  fee: z.coerce.number().min(0).default(0),
+  ...baseFields,
+});
+
+const updateTxSchema = z.discriminatedUnion("type", [
+  updateIncomeExpenseSchema,
+  updateTransferSchema,
+  updateTradeSchema,
+]);
 
 export async function updateTransaction(formData: FormData) {
   try {
     const userId = await requireUserId();
     const parsed = updateTxSchema.safeParse(readFormData(formData));
-    if (!parsed.success) throw new ActionError("입력값을 확인해 주세요.");
-
-    const { id, ...patch } = parsed.data;
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
-    for (const [k, v] of Object.entries(patch)) {
-      if (v !== undefined) updates[k] = v;
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ActionError(first?.message ?? "입력값을 확인해 주세요.");
     }
-    if (Object.keys(updates).length === 1) return ok({ id });
+    const input = parsed.data;
+    if (input.type === "transfer" && input.fromAccountId === input.toAccountId) {
+      throw new ActionError("같은 계정 간 이체는 만들 수 없어요.");
+    }
+
+    const common = {
+      occurredAt: input.occurredAt,
+      type: input.type,
+      amount: input.amount,
+      currency: input.currency,
+      payee: input.payee ?? null,
+      memo: input.memo ?? null,
+      updatedAt: new Date(),
+    };
+
+    // 타입 외 필드는 null 로 명시적으로 비워, 같은 type 안에서의 항목 변경이
+    // 다른 타입 흔적을 남기지 않게 한다 (예: trade → income 으로 바꾸진 못해도
+    // 잘못된 인풋 방어).
+    let updates: Record<string, unknown>;
+    switch (input.type) {
+      case "income":
+      case "expense":
+        updates = {
+          ...common,
+          accountId: input.accountId,
+          categoryId: input.categoryId,
+          fromAccountId: null,
+          toAccountId: null,
+          tradeKind: null,
+          ticker: null,
+          quantity: null,
+          pricePerUnit: null,
+          fee: null,
+        };
+        break;
+      case "transfer":
+        updates = {
+          ...common,
+          accountId: null,
+          categoryId: null,
+          fromAccountId: input.fromAccountId,
+          toAccountId: input.toAccountId,
+          tradeKind: null,
+          ticker: null,
+          quantity: null,
+          pricePerUnit: null,
+          fee: null,
+        };
+        break;
+      case "trade":
+        updates = {
+          ...common,
+          accountId: input.accountId,
+          categoryId: null,
+          fromAccountId: null,
+          toAccountId: null,
+          tradeKind: input.tradeKind,
+          ticker: input.ticker,
+          quantity: input.quantity,
+          pricePerUnit: input.pricePerUnit,
+          fee: input.fee,
+        };
+        break;
+    }
 
     const result = await db
       .update(schema.transactions)
       .set(updates)
       .where(
         and(
-          eq(schema.transactions.id, id),
+          eq(schema.transactions.id, input.id),
           eq(schema.transactions.userId, userId)
         )
       );
     revalidatePath("/");
     revalidatePath("/transactions");
-    return ok({ id, rows: result.rowsAffected ?? 0 });
+    revalidatePath("/accounts");
+    return ok({ id: input.id, rows: result.rowsAffected ?? 0 });
   } catch (e) {
     return fail(e);
   }

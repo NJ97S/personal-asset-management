@@ -16,7 +16,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { createTransaction } from "@/lib/actions/transactions";
+import {
+  createTransaction,
+  updateTransaction,
+} from "@/lib/actions/transactions";
 
 interface AccountOpt {
   id: string;
@@ -24,9 +27,19 @@ interface AccountOpt {
   type: string;
 }
 
+interface TransferFormInitial {
+  id: string;
+  amount: number;
+  occurredAt: Date;
+  fromAccountId?: string | null;
+  toAccountId?: string | null;
+  memo?: string | null;
+}
+
 interface TransferFormProps {
   accounts: AccountOpt[];
   defaultFromAccountId?: string;
+  initial?: TransferFormInitial;
   onSuccess?: () => void;
 }
 
@@ -37,20 +50,33 @@ function todayLocal() {
   return local.toISOString().slice(0, 16);
 }
 
+function dateToLocalInput(d: Date) {
+  const offset = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - offset * 60 * 1000);
+  return local.toISOString().slice(0, 16);
+}
+
 export function TransferForm({
   accounts,
   defaultFromAccountId,
+  initial,
   onSuccess,
 }: TransferFormProps) {
-  const [amount, setAmount] = React.useState("");
+  const isEdit = !!initial?.id;
+  const [amount, setAmount] = React.useState(
+    initial ? String(initial.amount) : ""
+  );
   const [fromAccountId, setFromAccountId] = React.useState<string | undefined>(
-    defaultFromAccountId ?? accounts[0]?.id
+    initial?.fromAccountId ?? defaultFromAccountId ?? accounts[0]?.id
   );
   const [toAccountId, setToAccountId] = React.useState<string | undefined>(
-    accounts.find((a) => a.id !== (defaultFromAccountId ?? accounts[0]?.id))?.id
+    initial?.toAccountId ??
+      accounts.find((a) => a.id !== (defaultFromAccountId ?? accounts[0]?.id))?.id
   );
-  const [occurredAt, setOccurredAt] = React.useState(todayLocal());
-  const [memo, setMemo] = React.useState("");
+  const [occurredAt, setOccurredAt] = React.useState(
+    initial ? dateToLocalInput(initial.occurredAt) : todayLocal()
+  );
+  const [memo, setMemo] = React.useState(initial?.memo ?? "");
   const [pending, startTransition] = useTransition();
 
   const sameAccount =
@@ -61,16 +87,21 @@ export function TransferForm({
     if (fromAccountId) formData.set("fromAccountId", fromAccountId);
     if (toAccountId) formData.set("toAccountId", toAccountId);
     formData.set("occurredAt", new Date(occurredAt).toISOString());
+    if (isEdit && initial) formData.set("id", initial.id);
 
     startTransition(async () => {
-      const result = await createTransaction(formData);
+      const result = isEdit
+        ? await updateTransaction(formData)
+        : await createTransaction(formData);
       if (result.ok) {
-        toast.success("이체를 기록했어요");
+        toast.success(isEdit ? "수정했어요" : "이체를 기록했어요");
         if (typeof navigator !== "undefined" && "vibrate" in navigator) {
           navigator.vibrate?.(10);
         }
-        setAmount("");
-        setMemo("");
+        if (!isEdit) {
+          setAmount("");
+          setMemo("");
+        }
         onSuccess?.();
       } else {
         toast.error(result.error);
@@ -189,7 +220,13 @@ export function TransferForm({
         }
         className="w-full"
       >
-        {pending ? "기록하는 중..." : "이체 기록"}
+        {pending
+          ? isEdit
+            ? "수정하는 중..."
+            : "기록하는 중..."
+          : isEdit
+            ? "수정"
+            : "이체 기록"}
       </Button>
     </form>
   );

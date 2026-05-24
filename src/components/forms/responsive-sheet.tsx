@@ -67,7 +67,13 @@ export function ResponsiveSheet({
             <DrawerDescription>{description}</DrawerDescription>
           ) : null}
         </DrawerHeader>
-        <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 safe-bottom">
+        {/*
+          pb-6 + safe-bottom 함께 쓰면 둘 다 padding-bottom 속성을 건드려
+          뒤에 정의된 .safe-bottom (= env(safe-area-inset-bottom)) 이 pb-6 를 덮어쓴다.
+          안드로이드/노치 없는 단말에선 env 값이 0 이라 패딩이 통째로 사라진다.
+          단일 calc 패딩으로 합쳐 두 값 모두 보장.
+        */}
+        <div className="flex-1 overflow-y-auto overscroll-contain px-4 pt-1 pb-[calc(env(safe-area-inset-bottom)+1.75rem)]">
           {children}
         </div>
       </DrawerContent>

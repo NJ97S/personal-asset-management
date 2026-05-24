@@ -7,6 +7,7 @@ import { nanoid } from "nanoid";
 
 import { db, schema } from "@/db";
 import { ActionError, fail, ok, requireUserId } from "./_helpers";
+import { fetchPriceFor } from "@/lib/prices";
 
 const assetClasses = [
   "stock_kr",
@@ -121,6 +122,74 @@ export async function deleteHolding(id: string) {
     revalidatePath("/accounts");
     revalidatePath("/");
     return ok({ id });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// 사용자가 직접 시세를 갱신하기 위한 액션.
+// 매일 09:30 KST 크론을 기다리지 않고 즉시 prices 테이블을 채워 0% 고정을 풀 수 있다.
+export async function refreshHoldingPrices() {
+  try {
+    const userId = await requireUserId();
+
+    const rows = await db
+      .select()
+      .from(schema.holdings)
+      .where(eq(schema.holdings.userId, userId));
+
+    const targets = rows.filter(
+      (h) =>
+        h.assetClass !== "other" &&
+        !(h.manualValue != null && h.manualValue > 0)
+    );
+
+    if (targets.length === 0) {
+      return ok({ ok: 0, failed: 0, errors: [] as string[] });
+    }
+
+    const results = await Promise.allSettled(
+      targets.map(async (h) => {
+        const q = await fetchPriceFor(h);
+        const dateStr = q.asOf.slice(0, 10);
+        await db
+          .insert(schema.prices)
+          .values({
+            ticker: h.ticker,
+            date: dateStr,
+            close: q.close,
+            currency: q.currency,
+          })
+          .onConflictDoUpdate({
+            target: [schema.prices.ticker, schema.prices.date],
+            set: { close: q.close, currency: q.currency },
+          });
+        await db
+          .update(schema.holdings)
+          .set({ lastPricedAt: new Date() })
+          .where(eq(schema.holdings.id, h.id));
+        return h.ticker;
+      })
+    );
+
+    let okCount = 0;
+    let failed = 0;
+    const errors: string[] = [];
+    results.forEach((r, idx) => {
+      if (r.status === "fulfilled") {
+        okCount++;
+      } else {
+        failed++;
+        const ticker = targets[idx]?.ticker ?? "?";
+        const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        errors.push(`${ticker}: ${msg}`);
+      }
+    });
+
+    revalidatePath("/settings/holdings");
+    revalidatePath("/accounts");
+    revalidatePath("/");
+    return ok({ ok: okCount, failed, errors });
   } catch (e) {
     return fail(e);
   }

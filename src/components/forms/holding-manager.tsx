@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useTransition } from "react";
 import { formatDistanceToNow } from "date-fns";
@@ -12,7 +12,7 @@ import { Card } from "@/components/ui/card";
 import { CategoryIcon } from "@/components/domain/category-icon";
 import { ResponsiveSheet } from "./responsive-sheet";
 import { HoldingForm } from "./holding-form";
-import { deleteHolding } from "@/lib/actions/holdings";
+import { deleteHolding, refreshHoldingPrices } from "@/lib/actions/holdings";
 import { cn } from "@/lib/utils";
 
 type AssetClass =
@@ -94,6 +94,11 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Holding | undefined>();
   const [, startTransition] = useTransition();
+  const [refreshing, startRefresh] = useTransition();
+
+  const hasFetchableHoldings = holdings.some(
+    (h) => h.assetClass !== "other" && !(h.manualValue != null && h.manualValue > 0)
+  );
 
   function startNew() {
     setEditing(undefined);
@@ -119,18 +124,54 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
     });
   }
 
+  function refresh() {
+    startRefresh(async () => {
+      const result = await refreshHoldingPrices();
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      const { ok: okCount, failed } = result.data;
+      if (failed === 0 && okCount > 0) {
+        toast.success(`${okCount}종목 시세를 갱신했어요`);
+      } else if (okCount > 0) {
+        toast.warning(`${okCount}종목 갱신, ${failed}종목 실패`);
+      } else if (failed > 0) {
+        toast.error(`${failed}종목 시세 갱신에 실패했어요`);
+      } else {
+        toast.info("갱신할 종목이 없어요");
+      }
+    });
+  }
+
   const accountName = (id: string) =>
     accounts.find((a) => a.id === id)?.name ?? "?";
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <p className="text-body-s text-muted-foreground">
           {holdings.length}종목
         </p>
-        <Button size="sm" onClick={startNew} disabled={accounts.length === 0}>
-          <Plus className="h-4 w-4" /> 추가
-        </Button>
+        <div className="flex items-center gap-2">
+          {hasFetchableHoldings && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={refresh}
+              disabled={refreshing}
+              aria-label="시세 새로고침"
+            >
+              <RefreshCw
+                className={cn("h-4 w-4", refreshing && "animate-spin")}
+              />
+              <span className="hidden sm:inline">시세 갱신</span>
+            </Button>
+          )}
+          <Button size="sm" onClick={startNew} disabled={accounts.length === 0}>
+            <Plus className="h-4 w-4" /> 추가
+          </Button>
+        </div>
       </div>
 
       {accounts.length === 0 ? (
@@ -175,70 +216,92 @@ export function HoldingManager({ holdings, accounts }: HoldingManagerProps) {
                     })
                   : null;
 
+              const detailParts = [
+                assetLabelMap[h.assetClass],
+                accountName(h.accountId),
+                quantityLabel,
+                avgPriceLabel,
+                currentPriceLabel,
+              ].filter(Boolean) as string[];
+
               return (
-                <li key={h.id} className="flex items-center gap-3 px-4 py-3">
-                  <CategoryIcon
-                    icon={assetIconMap[h.assetClass]}
-                    color={assetColorMap[h.assetClass]}
-                    size="md"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-body-l font-medium">
-                      {h.name ? `${h.name} · ${h.ticker}` : h.ticker}
-                    </p>
-                    <p className="text-body-s text-muted-foreground">
-                      {assetLabelMap[h.assetClass]} · {accountName(h.accountId)}
-                      {quantityLabel ? ` · ${quantityLabel}` : ""}
-                      {avgPriceLabel ? ` · ${avgPriceLabel}` : ""}
-                      {currentPriceLabel ? ` · ${currentPriceLabel}` : ""}
-                    </p>
-                    {needsQuantity && (
-                      <p className="text-caption text-danger">
-                        수량이 0이에요. 편집해서 보유 수량을 입력해 주세요.
-                      </p>
-                    )}
-                    {updatedLabel && (
-                      <p className="text-body-xs text-muted-foreground/60">
-                        {updatedLabel} 갱신
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex flex-col items-end gap-0.5">
-                    <div className="tabular text-amount-m">
-                      {formatCurrency(h.marketValue, h.currency)}
-                    </div>
-                    {h.pnlPercent != null && (
-                      <div
-                        className={cn(
-                          "text-body-s tabular",
-                          h.pnlPercent > 0
-                            ? "text-success"
-                            : h.pnlPercent < 0
-                            ? "text-danger"
-                            : "text-muted-foreground"
-                        )}
-                      >
-                        {h.pnlPercent > 0 ? "+" : ""}
-                        {h.pnlPercent.toFixed(2)}%
+                <li key={h.id} className="px-4 py-3">
+                  {/*
+                    모바일 폭에서 한 행에 icon + 텍스트 + 가격 + 편집/삭제 5단을 욱여넣으면
+                    중간 텍스트 cell 이 ~40px 만 남아 "TIGER 미국..." 처럼 잘린다.
+                    구조를 2층으로 나누고 (헤더 행 + 액션 행) 본문은 자유롭게 wrap 한다.
+                  */}
+                  <div className="flex items-start gap-3">
+                    <CategoryIcon
+                      icon={assetIconMap[h.assetClass]}
+                      color={assetColorMap[h.assetClass]}
+                      size="md"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <p
+                          className="min-w-0 flex-1 break-keep text-body-l font-medium"
+                          style={{ wordBreak: "keep-all" }}
+                        >
+                          {h.name ? `${h.name} · ${h.ticker}` : h.ticker}
+                        </p>
+                        <div className="shrink-0 text-right">
+                          <div className="tabular text-amount-m">
+                            {formatCurrency(h.marketValue, h.currency)}
+                          </div>
+                          {h.pnlPercent != null && (
+                            <div
+                              className={cn(
+                                "text-body-s tabular",
+                                h.pnlPercent > 0
+                                  ? "text-success"
+                                  : h.pnlPercent < 0
+                                    ? "text-danger"
+                                    : "text-muted-foreground"
+                              )}
+                            >
+                              {h.pnlPercent > 0 ? "+" : ""}
+                              {h.pnlPercent.toFixed(2)}%
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
+                      <p
+                        className="mt-1 text-body-s text-muted-foreground"
+                        style={{ wordBreak: "keep-all" }}
+                      >
+                        {detailParts.join(" · ")}
+                      </p>
+                      {needsQuantity && (
+                        <p className="mt-1 text-caption text-danger">
+                          수량이 0이에요. 편집해서 보유 수량을 입력해 주세요.
+                        </p>
+                      )}
+                      <div className="mt-1 flex items-center justify-between gap-2">
+                        <p className="text-body-xs text-muted-foreground/60">
+                          {updatedLabel ? `${updatedLabel} 갱신` : "시세 미갱신"}
+                        </p>
+                        <div className="flex items-center">
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => startEdit(h)}
+                            aria-label="편집"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => remove(h)}
+                            aria-label="삭제"
+                          >
+                            <Trash2 className="h-4 w-4 text-danger" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    onClick={() => startEdit(h)}
-                    aria-label="편집"
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    onClick={() => remove(h)}
-                    aria-label="삭제"
-                  >
-                    <Trash2 className="h-4 w-4 text-danger" />
-                  </Button>
                 </li>
               );
             })}

@@ -47,14 +47,19 @@ export function InstallPrompt() {
   };
 
   return (
-    <div className="fixed bottom-[calc(env(safe-area-inset-bottom)+5rem)] left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-background px-4 py-3 shadow-lg ring-1 ring-border md:hidden">
+    <div
+      className="fixed bottom-[calc(env(safe-area-inset-bottom)+5rem)] left-1/2 z-40 flex w-[calc(100vw-2rem)] max-w-sm -translate-x-1/2 flex-col gap-3 rounded-xl bg-background px-4 py-3 shadow-lg ring-1 ring-border md:hidden"
+      style={{ wordBreak: "keep-all" }}
+    >
       <span className="text-sm text-foreground">홈 화면에 추가하시겠어요?</span>
-      <Button size="sm" onClick={handleInstall}>
-        홈 화면에 추가
-      </Button>
-      <Button size="sm" variant="ghost" onClick={handleDismiss}>
-        닫기
-      </Button>
+      <div className="flex items-center justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={handleDismiss}>
+          닫기
+        </Button>
+        <Button size="sm" onClick={handleInstall}>
+          홈 화면에 추가
+        </Button>
+      </div>
     </div>
   );
 }
